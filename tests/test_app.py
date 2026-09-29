@@ -301,6 +301,91 @@ class AppTest(unittest.TestCase):
         self.assertIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1 + Div. 2"]}, 5000))
         self.assertNotIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1"]}, 5000))
 
+    def test_curated_image_variants_preserve_pool_and_alias_rules(self):
+        expected_keys = {
+            "1677B@image01", "2258D@image01", "2256E@image01", "2238C@image01",
+            "2247E@image01", "2238E@image01", "2246E@image01", "2194D@image01",
+            "2197C@image01", "2175E1@image01", "2166D@image01", "2156B@image01",
+            "2224E@image01", "2226C@image01", "2226C@image02", "2216D@image01",
+            "2209C@image01", "2210B@image01", "2210B@image02", "2210A@image01",
+            "2197E1@image01", "2208D2@image01", "2119A@image01", "2128B@image01",
+            "2120B@image01", "2234D@image01", "2232B@image01", "2130E3@image01",
+            "2139E1@image01", "2151G1@image01", "2151D@image01", "2151A@image01",
+            "2146D1@image01", "2156D@image01", "2110F@image01", "2120G@image01",
+            "2120G@image02", "2113E@image01", "2113C@image01",
+            "2119C@image01", "2120D@image01", "2134D@image01",
+            "2133C@image01", "2133E@image01", "2153B@image01",
+            "2154E@image01", "2155D@image01", "2140B@image01",
+            "2188G@image01", "2189B@image01", "2173C@image01",
+            "2217G@image01", "2135B@image01", "2138D@image01",
+            "2205B@image01", "2150D@image01", "2262D@image01",
+            "1874C@image01", "1854B@image01", "1924B@image01",
+        }
+        rows = get_db().execute(
+            f"SELECT * FROM questions WHERE canonical_key IN ({','.join('?' for _ in expected_keys)})",
+            tuple(expected_keys),
+        ).fetchall()
+        self.assertEqual({row["canonical_key"] for row in rows}, expected_keys)
+        self.assertTrue(all(row["brain"] for row in rows))
+        self.assertTrue(all(os.path.isfile(row["image_path"]) for row in rows))
+        self.assertEqual(
+            {row["canonical_key"] for row in rows if row["open_mode"]},
+            {
+                "2175E1@image01", "2226C@image01", "2210B@image01",
+                "2210B@image02", "2210A@image01", "2197E1@image01",
+                "2139E1@image01", "2151G1@image01", "2146D1@image01",
+                "1924B@image01",
+            },
+        )
+
+        shared = get_db().execute(
+            "SELECT id FROM questions WHERE canonical_key='1677B@image01'"
+        ).fetchone()["id"]
+        self.assertTrue(check_answer(shared, {
+            "answerMode": "contest", "contestAnswer": "1678D",
+        })[0])
+        repeated = get_db().execute(
+            "SELECT id FROM questions WHERE canonical_key='2215B'"
+        ).fetchone()["id"]
+        self.assertTrue(check_answer(repeated, {
+            "answerMode": "contest", "contestAnswer": "2216D",
+        })[0])
+        open_easy_hard = get_db().execute(
+            "SELECT id FROM questions WHERE canonical_key='2226C@image01'"
+        ).fetchone()["id"]
+        single_easy = get_db().execute(
+            "SELECT id FROM questions WHERE canonical_key='2226C@image02'"
+        ).fetchone()["id"]
+        self.assertTrue(check_answer(open_easy_hard, {
+            "answerMode": "contest", "contestAnswer": "2226E",
+        })[0])
+        self.assertFalse(check_answer(single_easy, {
+            "answerMode": "contest", "contestAnswer": "2226E",
+        })[0])
+        permutation = get_db().execute(
+            "SELECT id FROM questions WHERE canonical_key='2210B@image01'"
+        ).fetchone()["id"]
+        self.assertTrue(check_answer(permutation, {
+            "answerMode": "contest", "contestAnswer": "2205D",
+        })[0])
+        self.assertTrue(check_answer(permutation, {
+            "answerMode": "contest", "contestAnswer": "2217E",
+        })[0])
+        for key, answer in {
+            "2175E1@image01": "2175E2",
+            "2197E1@image01": "2197E2",
+            "2139E1@image01": "2139E2",
+            "2151G1@image01": "2151G2",
+            "2146D1@image01": "2146D2",
+            "1924B@image01": "1925E",
+        }.items():
+            question_id = get_db().execute(
+                "SELECT id FROM questions WHERE canonical_key=?", (key,)
+            ).fetchone()["id"]
+            self.assertTrue(check_answer(question_id, {
+                "answerMode": "contest", "contestAnswer": answer,
+            })[0])
+
     def test_open_questions_are_isolated_from_standard_pools(self):
         client, _ = self.register("pool_isolation_user")
         db = get_db()
@@ -346,6 +431,36 @@ class AppTest(unittest.TestCase):
         self.assertEqual(db.execute(
             "SELECT open_mode FROM questions WHERE id=?", (opened_id,)
         ).fetchone()["open_mode"], 1)
+
+        status, rejected = client.request("POST", "/api/quiz/next", {
+            "scoringMode": "distance",
+            "filters": {"difficulty": "medium", "questionMode": "open"},
+        })
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("只支持传统对错", rejected["error"])
+        status, rejected = client.request("POST", "/api/matches", {
+            "scoringMode": "distance", "rounds": 3,
+            "filters": {"difficulty": "medium", "questionMode": "open"},
+        })
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("只支持传统对错", rejected["error"])
+
+        legacy_token = "legacy-open-distance"
+        db.execute(
+            """
+            INSERT INTO quiz_rounds(
+                token,user_id,question_id,difficulty,scoring_mode,time_limit,max_attempts,started_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (legacy_token, db.execute(
+                "SELECT id FROM users WHERE username='pool_isolation_user'"
+            ).fetchone()["id"], open_question_id, "medium", "distance", 120, 1, time.time()),
+        )
+        status, rejected = client.request("POST", "/api/quiz/answer", {
+            "token": legacy_token, "answerMode": "contest", "contestAnswer": "2399A",
+        })
+        self.assertEqual(status, 409, rejected)
+        self.assertIn("只支持传统对错", rejected["error"])
 
     def test_players_can_leave_waiting_rooms(self):
         host, _ = self.register("leave_host")
@@ -712,10 +827,15 @@ class AppTest(unittest.TestCase):
             if position < 4:
                 self.assertEqual(first.request("POST", "/api/daily/start", {})[0], 200)
         self.assertTrue(answered["result"]["completed"])
+        get_db().execute(
+            "UPDATE daily_answers SET elapsed_ms=(position+1)*1000 WHERE day=? AND user_id=(SELECT id FROM users WHERE username='daily_first')",
+            (day,),
+        )
         status, board = first.request("GET", "/api/daily/leaderboard")
         self.assertEqual(status, 200, board)
         self.assertEqual(board["players"][0]["username"], "daily_first")
         self.assertGreater(board["players"][0]["score"], 22500)
+        self.assertEqual(board["players"][0]["elapsedMs"], 15000)
 
     def test_open_mode_queues_unknown_answers_without_spending_attempts(self):
         client, registered = self.register("open_answer_user")

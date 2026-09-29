@@ -178,6 +178,7 @@ function soloFilters() {
 function updateQuestionModeHints() {
   $("#solo-open-rule").classList.toggle("hidden", selectedValue("#solo-question-mode") !== "open");
   $("#battle-open-rule").classList.toggle("hidden", selectedValue("#battle-question-mode") !== "open");
+  updateScoringCompatibility();
 }
 
 function updateSoloModeControls() {
@@ -193,7 +194,7 @@ function updateSoloModeControls() {
   $$("#solo-timing button").forEach(button => { button.disabled = rated; });
   $("#solo-time-limit").disabled = rated;
   updateSoloTimingControls();
-  updateBrainScoringCompatibility();
+  updateScoringCompatibility();
 }
 
 function updateSoloTimingControls() {
@@ -209,22 +210,24 @@ function updateSoloScoringControls() {
   updateSoloTimingControls();
 }
 
-function updateBrainScoringCompatibility() {
+function updateScoringCompatibility() {
   const soloBrain = selectedValue("#solo-difficulty") === "brain";
+  const soloOpen = selectedValue("#solo-question-mode") === "open";
   const soloDistance = $("#solo-scoring-mode button[data-value='distance']");
-  soloDistance.disabled = soloBrain;
-  if (soloBrain && selectedValue("#solo-scoring-mode") === "distance") {
+  soloDistance.disabled = soloBrain || soloOpen;
+  if ((soloBrain || soloOpen) && selectedValue("#solo-scoring-mode") === "distance") {
     selectSegment($("#solo-scoring-mode"), $("#solo-scoring-mode button[data-value='classic']"));
     updateSoloScoringControls();
-    toast("最强大脑不会提供距离分，已切换为传统对错");
+    toast(soloOpen ? "开放多解只支持传统对错，已自动切换" : "最强大脑不会提供距离分，已切换为传统对错");
   }
   const battleBrain = selectedValue("#battle-difficulty") === "brain";
+  const battleOpen = selectedValue("#battle-question-mode") === "open";
   const battleDistance = $("#battle-scoring-mode button[data-value='distance']");
-  battleDistance.disabled = battleBrain;
-  if (battleBrain && selectedValue("#battle-scoring-mode") === "distance") {
+  battleDistance.disabled = battleBrain || battleOpen;
+  if ((battleBrain || battleOpen) && selectedValue("#battle-scoring-mode") === "distance") {
     selectSegment($("#battle-scoring-mode"), $("#battle-scoring-mode button[data-value='classic']"));
     updateBattleScoringControls();
-    toast("最强大脑不会提供距离分，已切换为抢答模式");
+    toast(battleOpen ? "开放多解只支持抢答模式，已自动切换" : "最强大脑不会提供距离分，已切换为抢答模式");
   }
 }
 
@@ -806,9 +809,18 @@ async function endSoloSession() {
   toast("本次已结束");
 }
 
+function formatDurationMs(elapsedMs) {
+  const totalSeconds = Math.max(0, Math.floor(Number(elapsedMs || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function renderDailyBoard(players = []) {
   const body = $("#daily-board-body");
-  body.innerHTML = players.length ? players.map(player => `<tr><td class="rank">#${player.rank}</td><td><strong>${escapeHtml(player.username)}</strong></td><td>${player.score.toLocaleString()}</td><td>${new Date(player.finishedAt * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</td></tr>`).join("") : '<tr><td colspan="4">今天还没有完成挑战的玩家</td></tr>';
+  body.innerHTML = players.length ? players.map(player => `<tr><td class="rank">#${player.rank}</td><td><strong>${escapeHtml(player.username)}</strong></td><td>${player.score.toLocaleString()}</td><td>${formatDurationMs(player.elapsedMs)}</td></tr>`).join("") : '<tr><td colspan="4">今天还没有完成挑战的玩家</td></tr>';
 }
 
 function stopDailyTimer() {
@@ -1264,7 +1276,7 @@ function bindEvents() {
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
   $$("#battle-mode button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
-  $$("#solo-difficulty button, #battle-difficulty button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBrainScoringCompatibility(); }));
+  $$("#solo-difficulty button, #battle-difficulty button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateScoringCompatibility(); }));
   $$("#solo-question-mode button, #battle-question-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateQuestionModeHints(); }));
   $$("#solo-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloScoringControls(); }));
   $$("#battle-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBattleScoringControls(); }));

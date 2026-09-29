@@ -826,10 +826,14 @@ class Handler(BaseHTTPRequestHandler):
     def daily_leaderboard(self, day):
         rows = get_db().execute(
             """
-            SELECT u.username,dr.total_score,dr.finished_at
+            SELECT u.username,dr.total_score,totals.elapsed_ms
             FROM daily_runs dr JOIN users u ON u.id=dr.user_id
+            JOIN (
+                SELECT day,user_id,SUM(elapsed_ms) elapsed_ms
+                FROM daily_answers GROUP BY day,user_id
+            ) totals ON totals.day=dr.day AND totals.user_id=dr.user_id
             WHERE dr.day=? AND dr.finished_at IS NOT NULL
-            ORDER BY dr.total_score DESC,dr.finished_at ASC,u.id ASC LIMIT 100
+            ORDER BY dr.total_score DESC,totals.elapsed_ms ASC,u.id ASC LIMIT 100
             """,
             (day,),
         ).fetchall()
@@ -837,7 +841,7 @@ class Handler(BaseHTTPRequestHandler):
             "rank": index + 1,
             "username": row["username"],
             "score": row["total_score"],
-            "finishedAt": row["finished_at"],
+            "elapsedMs": row["elapsed_ms"],
         } for index, row in enumerate(rows)]
 
     def daily_payload(self, session, day):
@@ -1394,6 +1398,8 @@ class Handler(BaseHTTPRequestHandler):
         scoring_mode = str(payload.get("scoringMode", "classic"))
         if scoring_mode not in {"classic", "distance"}:
             return self.json(400, error="未知计分方式")
+        if scoring_mode == "distance" and filters["questionMode"] == "open":
+            return self.json(400, error="开放多解只支持传统对错")
         if scoring_mode == "distance" and filters["difficulty"] == "brain":
             return self.json(400, error="最强大脑不支持距离积分，以免分数泄露答案范围")
         timed = rated or bool(payload.get("timed"))
@@ -1484,6 +1490,8 @@ class Handler(BaseHTTPRequestHandler):
         if round_row["answered_at"] is not None:
             return self.json(409, error="这道题已经作答")
         question = db.execute("SELECT * FROM questions WHERE id=?", (round_row["question_id"],)).fetchone()
+        if round_row["scoring_mode"] == "distance" and question["open_mode"]:
+            return self.json(409, error="开放多解只支持传统对错，请结束本题后重新选择")
         elapsed = now() - round_row["started_at"]
         if round_row["time_limit"] and elapsed >= round_row["time_limit"]:
             elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
@@ -1671,6 +1679,8 @@ class Handler(BaseHTTPRequestHandler):
         scoring_mode = str(payload.get("scoringMode", "classic"))
         if scoring_mode not in {"classic", "distance"}:
             return self.json(400, error="未知赛制")
+        if scoring_mode == "distance" and filters["questionMode"] == "open":
+            return self.json(400, error="开放多解只支持传统对错")
         if scoring_mode == "distance" and filters["difficulty"] == "brain":
             return self.json(400, error="最强大脑不支持距离积分，以免分数泄露答案范围")
         candidates = matching_question_ids(filters, 100)
@@ -2102,6 +2112,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(429, error=f"错答罚时中，还需等待 {retry_after} 秒", retryAfter=retry_after)
         question_ids = load_json(match["question_ids_json"], [])
         question = db.execute("SELECT * FROM questions WHERE id=?", (question_ids[match["round_index"]],)).fetchone()
+        if match["scoring_mode"] == "distance" and question["open_mode"]:
+            return self.json(409, error="开放多解只支持传统对错，请退出本场后重新创建房间")
         if match["scoring_mode"] == "distance":
             if payload.get("answerMode", "contest") != "contest":
                 return self.json(400, error="积分赛只接受 2269E 这样的 Contest 写法")

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=11">
+  <link rel="stylesheet" href="/static/styles.css?v=12">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -110,7 +110,7 @@
               <div class="field-group">
                 <span class="field-label">题型</span>
                 <div class="segmented" id="solo-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
-                <p id="solo-open-rule" class="form-hint hidden">只从开放题池抽题；一道线索可能对应多道题，回答任一已确认答案均算正确。</p>
+                <p id="solo-open-rule" class="form-hint hidden">只从开放题池抽题；一道线索可能对应多道题，回答任一已确认答案均算正确。开放多解只支持传统对错。</p>
               </div>
               <div class="field-group">
                 <span class="field-label">计分方式</span>
@@ -199,7 +199,7 @@
               <div class="field-group">
                 <span class="field-label">题型</span>
                 <div class="segmented" id="battle-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
-                <p id="battle-open-rule" class="form-hint hidden">本房间只使用开放题池；任一已确认答案均有效。</p>
+                <p id="battle-open-rule" class="form-hint hidden">本房间只使用开放题池；任一已确认答案均有效。开放多解只支持抢答模式。</p>
               </div>
               <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
               <div class="field-group">
@@ -284,7 +284,7 @@
           </section>
           <section class="section-block daily-board-block">
             <div class="section-head"><div><p class="kicker">TODAY'S RANKING</p><h3>今日积分榜</h3></div><button id="refresh-daily-board" class="text-btn" type="button">刷新</button></div>
-            <div class="table-wrap"><table><thead><tr><th>排名</th><th>玩家</th><th>总分</th><th>完成时间</th></tr></thead><tbody id="daily-board-body"><tr><td colspan="4">完成五题后即可上榜</td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>排名</th><th>玩家</th><th>总分</th><th>局时</th></tr></thead><tbody id="daily-board-body"><tr><td colspan="4">完成五题后即可上榜</td></tr></tbody></table></div>
           </section>
         </section>
 
@@ -352,6 +352,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=11" defer></script>
+  <script src="/static/app.js?v=12" defer></script>
 </body>
 </html>

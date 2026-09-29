@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=2">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -50,6 +50,8 @@
         <button class="nav-item active" data-view="dashboard" type="button"><span aria-hidden="true">⌂</span>概览</button>
         <button class="nav-item" data-view="solo" type="button"><span aria-hidden="true">◎</span>单人图寻</button>
         <button class="nav-item" data-view="battle" type="button"><span aria-hidden="true">⚔</span>双人对战</button>
+        <button class="nav-item" data-view="submit" type="button"><span aria-hidden="true">＋</span>投稿线索</button>
+        <button id="admin-nav" class="nav-item hidden" data-view="admin" type="button"><span aria-hidden="true">✓</span>审核投稿</button>
         <button class="nav-item" data-view="leaderboard" type="button"><span aria-hidden="true">▥</span>排行榜</button>
       </nav>
       <div class="side-account">
@@ -109,6 +111,7 @@
                   <button type="button" data-value="easy">简单 <small>≤1200</small></button>
                   <button class="active" type="button" data-value="medium">中等 <small>1300-1900</small></button>
                   <button type="button" data-value="hard">困难 <small>≥2000</small></button>
+                  <button type="button" data-value="brain">最强大脑 <small>极端裁图</small></button>
                   <button type="button" data-value="all">混合</button>
                 </div>
               </div>
@@ -166,7 +169,7 @@
             <section class="battle-create">
               <p class="kicker">CREATE ROOM</p><h3>发起一场对战</h3>
               <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
-              <div class="field-group"><span class="field-label">题目难度</span><div class="segmented" id="battle-difficulty"><button type="button" data-value="easy">简单</button><button class="active" type="button" data-value="medium">中等</button><button type="button" data-value="hard">困难</button><button type="button" data-value="all">混合</button></div></div>
+              <div class="field-group"><span class="field-label">题目难度</span><div class="segmented" id="battle-difficulty"><button type="button" data-value="easy">简单</button><button class="active" type="button" data-value="medium">中等</button><button type="button" data-value="hard">困难</button><button type="button" data-value="brain">最强大脑</button><button type="button" data-value="all">混合</button></div></div>
               <label>题目数量<select id="battle-rounds"><option value="3">3 题</option><option value="5" selected>5 题</option><option value="7">7 题</option></select></label>
               <button id="create-room" class="primary" type="button">创建房间</button>
             </section>
@@ -202,6 +205,37 @@
           </section>
         </section>
 
+        <section id="view-submit" class="view">
+          <div class="submission-layout">
+            <section class="submission-form-block">
+              <p class="kicker">CONTRIBUTE A CLUE</p><h3>投稿一道图寻线索</h3>
+              <form id="submission-form" class="stack-form">
+                <label>对应题号<input id="submission-answer" autocomplete="off" maxlength="10" placeholder="例如 2257D" required></label>
+                <div class="field-group"><span class="field-label">线索类型</span><div id="submission-kind" class="segmented"><button class="active" data-value="image" type="button">题面图片</button><button data-value="fragment" type="button">文字碎片</button></div></div>
+                <label>上传裁图（PNG / JPEG / WebP，最大 3 MB）<input id="submission-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+                <figure id="submission-preview-wrap" class="upload-preview hidden"><img id="submission-preview" alt="待投稿线索预览"></figure>
+                <label>或直接填写文字线索<textarea id="submission-text" rows="4" maxlength="3000" placeholder="图片和文字至少提供一种"></textarea></label>
+                <label>补充说明<textarea id="submission-note" rows="3" maxlength="1000" placeholder="说明为什么这段线索能够唯一辨认，可选"></textarea></label>
+                <label class="check-line"><input id="submission-brain" type="checkbox"> 建议放入“最强大脑”题池</label>
+                <p class="form-hint">审核通过后会新增一个线索变体；同题已有线索和历次投稿不会被覆盖。</p>
+                <button class="primary" type="submit">提交审核</button>
+              </form>
+            </section>
+            <section class="submission-history">
+              <div class="section-head"><div><p class="kicker">MY SUBMISSIONS</p><h3>我的投稿</h3></div><button id="refresh-submissions" class="text-btn" type="button">刷新</button></div>
+              <div id="my-submissions" class="submission-list"><p class="empty-state">还没有投稿。</p></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-admin" class="view">
+          <section class="section-block review-block">
+            <div class="section-head"><div><p class="kicker">REVIEW QUEUE</p><h3>投稿审核</h3></div><button id="refresh-reviews" class="text-btn" type="button">刷新</button></div>
+            <p class="section-copy">原图和审核历史会一直保留。通过后只新增线索变体，不覆盖同题的其他问法。</p>
+            <div id="review-list" class="review-list"><p class="empty-state">暂无待审核投稿。</p></div>
+          </section>
+        </section>
+
         <section id="view-leaderboard" class="view">
           <section class="section-block leaderboard-block">
             <div class="section-head"><div><p class="kicker">GLOBAL RANKING</p><h3>Rating 排行榜</h3></div><button id="refresh-board" class="text-btn" type="button">刷新</button></div>
@@ -211,6 +245,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=2" defer></script>
 </body>
 </html>

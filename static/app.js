@@ -5,6 +5,7 @@ const state = {
   view: "dashboard",
   solo: { filters: null, question: null, answerMode: "contest", round: 0, startedAt: 0, timer: null },
   battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0 },
+  uploadData: "",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -72,6 +73,7 @@ function renderUser() {
   $("#metric-attempts").textContent = `${u.attempts} 次作答`;
   $("#metric-streak").textContent = u.bestStreak;
   $("#rating-tier").textContent = ratingTier(u.rating);
+  $("#admin-nav").classList.toggle("hidden", !u.isAdmin);
 }
 
 function ratingTier(rating) {
@@ -93,6 +95,8 @@ const viewMeta = {
   dashboard: ["OVERVIEW", "今天也来认几道题"],
   solo: ["SOLO QUIZ", "单人图寻"],
   battle: ["VERSUS", "双人对战"],
+  submit: ["CONTRIBUTE", "投稿线索"],
+  admin: ["MODERATION", "审核投稿"],
   leaderboard: ["RANKING", "排行榜"],
 };
 
@@ -104,6 +108,8 @@ function showView(name) {
   $("#page-title").textContent = viewMeta[name][1];
   $(".sidebar").classList.remove("open");
   if (name === "leaderboard") loadLeaderboard();
+  if (name === "submit") loadMySubmissions();
+  if (name === "admin") loadAdminSubmissions();
   if (name !== "battle" && state.battle.poll) stopBattlePoll();
   if (name === "battle" && state.battle.code) startBattlePoll();
 }
@@ -235,6 +241,134 @@ function answerPayload(prefix, mode) {
 
 function solutionText(solution) {
   return solution.answers.map(a => `${escapeHtml(a.contest)} / ${escapeHtml(a.round)}`).join("<br>");
+}
+
+function statusText(status) {
+  return { pending: "待审核", approved: "已通过", rejected: "未通过" }[status] || status;
+}
+
+function submissionItem(item) {
+  const media = item.imageUrl
+    ? `<div class="submission-thumb"><img src="${escapeHtml(item.imageUrl)}" alt="投稿裁图"></div>`
+    : `<div class="submission-thumb">TEXT</div>`;
+  return `<article class="submission-item ${escapeHtml(item.status)}">${media}<div class="submission-copy"><strong>${escapeHtml(item.answer)}</strong><span class="status-label">${statusText(item.status)}</span>${item.textClue ? `<p>${escapeHtml(item.textClue)}</p>` : ""}${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.reviewNote ? `<p>审核：${escapeHtml(item.reviewNote)}</p>` : ""}</div></article>`;
+}
+
+async function loadMySubmissions() {
+  const container = $("#my-submissions");
+  container.innerHTML = '<p class="empty-state">加载中...</p>';
+  try {
+    const payload = await api("/api/submissions/mine");
+    container.innerHTML = payload.submissions.length ? payload.submissions.map(submissionItem).join("") : '<p class="empty-state">还没有投稿。</p>';
+  } catch (error) {
+    container.innerHTML = `<p class="empty-state">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function previewSubmissionFile(event) {
+  const file = event.target.files[0];
+  state.uploadData = "";
+  $("#submission-preview-wrap").classList.add("hidden");
+  if (!file) return;
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024) {
+    event.target.value = "";
+    return toast("只支持 3 MB 以内的 PNG、JPEG 或 WebP", "error");
+  }
+  state.uploadData = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  $("#submission-preview").src = state.uploadData;
+  $("#submission-preview-wrap").classList.remove("hidden");
+}
+
+async function submitClue(event) {
+  event.preventDefault();
+  const button = $("#submission-form button[type='submit']");
+  setButtonBusy(button, true, "上传中...");
+  try {
+    await api("/api/submissions", {
+      method: "POST",
+      body: {
+        answer: $("#submission-answer").value,
+        clueKind: selectedValue("#submission-kind") || "image",
+        imageData: state.uploadData,
+        textClue: $("#submission-text").value,
+        note: $("#submission-note").value,
+        suggestedBrain: $("#submission-brain").checked,
+      },
+    });
+    toast("投稿已进入审核队列");
+    $("#submission-form").reset();
+    state.uploadData = "";
+    $("#submission-preview-wrap").classList.add("hidden");
+    selectSegment($("#submission-kind"), $("#submission-kind button[data-value='image']"));
+    loadMySubmissions();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+function reviewItem(item) {
+  const media = item.imageUrl
+    ? `<div class="review-media"><img src="${escapeHtml(item.imageUrl)}" alt="待审核裁图"></div>`
+    : `<div class="review-media"><p>${escapeHtml(item.textClue || "无图片")}</p></div>`;
+  const today = new Date().toISOString().slice(0, 10);
+  return `<article class="review-item" data-review-id="${item.id}">${media}<form class="review-form"><div class="full submission-copy"><strong>${escapeHtml(item.answer)} · ${escapeHtml(item.username)}</strong><span>${escapeHtml(item.clueKind)}${item.suggestedBrain ? " · 建议最强大脑" : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</div><label>题名<input name="title" required></label><label>Rating<input name="rating" type="number" min="800" max="4000" step="100" required></label><label>Round<input name="roundNumber" type="number" min="1" required></label><label>组别<select name="division"><option>Div. 1</option><option selected>Div. 2</option><option>Div. 3</option><option>Edu</option><option>Div. 1 + Div. 2</option></select></label><label>比赛日期<input name="contestDate" type="date" value="${today}" required></label><label class="check-line"><input name="brain" type="checkbox" ${item.suggestedBrain ? "checked" : ""}> 最强大脑</label><label class="full">审核备注<textarea name="reviewNote" rows="2"></textarea></label><div class="review-actions"><button class="danger-btn reject-review" type="button">不通过</button><button class="primary approve-review" type="submit">通过并入库</button></div></form></article>`;
+}
+
+async function loadAdminSubmissions() {
+  const container = $("#review-list");
+  if (!state.user?.isAdmin) {
+    container.innerHTML = '<p class="empty-state">需要管理员权限。</p>';
+    return;
+  }
+  container.innerHTML = '<p class="empty-state">加载中...</p>';
+  try {
+    const payload = await api("/api/admin/submissions");
+    const pending = payload.submissions.filter(item => item.status === "pending");
+    container.innerHTML = pending.length ? pending.map(reviewItem).join("") : '<p class="empty-state">暂无待审核投稿。</p>';
+    $$(".review-item", container).forEach(item => {
+      const form = $("form", item);
+      form.addEventListener("submit", event => { event.preventDefault(); reviewSubmission(item, "approve"); });
+      $(".reject-review", item).addEventListener("click", () => reviewSubmission(item, "reject"));
+    });
+  } catch (error) {
+    container.innerHTML = `<p class="empty-state">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function reviewSubmission(item, action) {
+  const form = $("form", item);
+  const button = action === "approve" ? $(".approve-review", item) : $(".reject-review", item);
+  const fields = new FormData(form);
+  if (action === "approve" && !form.reportValidity()) return;
+  setButtonBusy(button, true, "处理中...");
+  try {
+    const dateValue = fields.get("contestDate");
+    await api(`/api/admin/submissions/${item.dataset.reviewId}/review`, {
+      method: "POST",
+      body: {
+        action,
+        title: fields.get("title"),
+        rating: fields.get("rating"),
+        roundNumber: fields.get("roundNumber"),
+        division: fields.get("division"),
+        contestTime: dateValue ? Math.floor(new Date(`${dateValue}T00:00:00Z`).getTime() / 1000) : 0,
+        brain: fields.get("brain") === "on",
+        reviewNote: fields.get("reviewNote"),
+      },
+    });
+    toast(action === "approve" ? "已通过并加入题库" : "已标记为不通过");
+    loadAdminSubmissions();
+  } catch (error) {
+    toast(error.message, "error");
+    setButtonBusy(button, false);
+  }
 }
 
 async function submitSoloAnswer(event) {
@@ -470,11 +604,15 @@ function bindEvents() {
   $("#menu-btn").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
-  $$("#solo-difficulty button, #battle-mode button, #battle-difficulty button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#solo-difficulty button, #battle-mode button, #battle-difficulty button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
   $("#solo-start").addEventListener("click", startSolo);
   $$('[data-answer-mode]').forEach(btn => btn.addEventListener("click", () => setSoloAnswerMode(btn.dataset.answerMode)));
   $("#solo-answer-form").addEventListener("submit", submitSoloAnswer);
   $("#refresh-board").addEventListener("click", loadLeaderboard);
+  $("#submission-file").addEventListener("change", previewSubmissionFile);
+  $("#submission-form").addEventListener("submit", submitClue);
+  $("#refresh-submissions").addEventListener("click", loadMySubmissions);
+  $("#refresh-reviews").addEventListener("click", loadAdminSubmissions);
   $("#create-room").addEventListener("click", createRoom);
   $("#join-room").addEventListener("click", joinRoom);
   $("#join-code").addEventListener("input", event => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });

@@ -30,8 +30,18 @@ def validate_pack(items):
             continue
         clue = normalized(str(item["clue"]))
         title = normalized(str(item["title"]))
-        if len(clue) < 180 or len(clue.split()) < 28:
-            errors.append(f"{label}: clue is too short to be uniquely recognizable")
+        clue_kind = str(item.get("clue_kind", "statement"))
+        image_path = str(item.get("image_path", "")).strip()
+        if clue_kind not in {"statement", "fragment", "image"}:
+            errors.append(f"{label}: clue_kind must be statement, fragment, or image")
+        if clue_kind == "statement" and (len(clue) < 180 or len(clue.split()) < 28):
+            errors.append(f"{label}: statement clue is too short to be uniquely recognizable")
+        if clue_kind == "fragment" and len(clue) < 12:
+            errors.append(f"{label}: text fragment must contain at least 12 normalized characters")
+        if clue_kind == "image":
+            target = Path(__file__).resolve().parents[1] / image_path
+            if not image_path or not target.is_file():
+                errors.append(f"{label}: image_path must reference an existing repository image")
         if title and title in clue:
             errors.append(f"{label}: clue leaks the problem title")
         if "gym" in str(item["round_type"]).lower() or "/gym/" in str(item["source_url"]).lower():
@@ -46,9 +56,10 @@ def validate_pack(items):
                     errors.append(f"{label}: aliases must be [contest_id, index, round_number, division]")
                     continue
                 alias_key = f"{alias[0]}{str(alias[1]).upper()}"
-                if alias_key in seen_aliases and seen_aliases[alias_key] != label:
-                    errors.append(f"{label}: alias {alias_key} is already used by {seen_aliases[alias_key]}")
-                seen_aliases[alias_key] = label
+                previous = seen_aliases.get(alias_key)
+                if previous and previous[1] != title:
+                    errors.append(f"{label}: alias {alias_key} is already used by {previous[0]} with another title")
+                seen_aliases[alias_key] = (label, title)
         for other_label, other_clue in normalized_clues:
             similarity = difflib.SequenceMatcher(None, clue, other_clue).ratio()
             if similarity >= 0.86:
@@ -64,15 +75,17 @@ def import_pack(items):
         for item in items:
             db.execute(
                 """
-                INSERT INTO questions(canonical_key,title,clue,rating,contest_time,round_type,source_url,active,unique_checked)
-                VALUES(?,?,?,?,?,?,?,1,1)
+                INSERT INTO questions(canonical_key,title,clue,rating,contest_time,round_type,source_url,clue_kind,image_path,brain,active,unique_checked)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1,1)
                 ON CONFLICT(canonical_key) DO UPDATE SET title=excluded.title,clue=excluded.clue,
                     rating=excluded.rating,contest_time=excluded.contest_time,round_type=excluded.round_type,
-                    source_url=excluded.source_url,active=1,unique_checked=1
+                    source_url=excluded.source_url,clue_kind=excluded.clue_kind,image_path=excluded.image_path,
+                    brain=excluded.brain,active=1,unique_checked=1
                 """,
                 (
                     item["key"], item["title"], item["clue"], item["rating"], item["contest_time"],
-                    item["round_type"], item["source_url"],
+                    item["round_type"], item["source_url"], item.get("clue_kind", "statement"),
+                    item.get("image_path"), int(bool(item.get("brain", False))),
                 ),
             )
             qid = db.execute("SELECT id FROM questions WHERE canonical_key=?", (item["key"],)).fetchone()["id"]

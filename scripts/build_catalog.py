@@ -54,7 +54,7 @@ def main():
         round_match = ROUND_RE.search(name)
         division = division_for(name)
         if (
-            contest.get("type") != "CF" or contest.get("phase") != "FINISHED"
+            contest.get("type") not in {"CF", "ICPC"} or contest.get("phase") != "FINISHED"
             or not round_match or not division or contest_id < args.min_contest
             or (args.max_contest is not None and contest_id > args.max_contest)
         ):

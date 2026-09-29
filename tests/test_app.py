@@ -1,6 +1,8 @@
 import http.client
+import base64
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -78,7 +80,7 @@ class AppTest(unittest.TestCase):
         token = payload["question"]["token"]
         status, svg = client.request("GET", payload["question"]["clueUrl"])
         self.assertEqual(status, 200)
-        self.assertIn(b"PROBLEM STATEMENT", svg)
+        self.assertTrue(b"PROBLEM STATEMENT" in svg or svg.startswith(b"\x89PNG"))
 
         row = get_db().execute("SELECT question_id FROM quiz_rounds WHERE token=?", (token,)).fetchone()
         alias = get_db().execute("SELECT * FROM aliases WHERE question_id=? LIMIT 1", (row["question_id"],)).fetchone()
@@ -131,6 +133,91 @@ class AppTest(unittest.TestCase):
         self.assertTrue(any("too short" in error for error in errors))
         self.assertTrue(any("leaks" in error for error in errors))
         self.assertTrue(any("Gym" in error for error in errors))
+
+    def test_brain_pool_and_reviewed_variant_preserve_same_problem_alias(self):
+        client, registered = self.register("contributor")
+        status, brain = client.request("POST", "/api/quiz/next", {"filters": {"difficulty": "brain"}})
+        self.assertEqual(status, 200, brain)
+        status, clue = client.request("GET", brain["question"]["clueUrl"])
+        self.assertEqual(status, 200)
+        self.assertTrue(clue.startswith(b"\x89PNG"))
+
+        tiny_png = base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"review-test-image"
+        ).decode()
+        status, submitted = client.request("POST", "/api/submissions", {
+            "answer": "2257D",
+            "clueKind": "image",
+            "imageData": f"data:image/png;base64,{tiny_png}",
+            "note": "A second visual clue for the same problem.",
+            "suggestedBrain": True,
+        })
+        self.assertEqual(status, 200, submitted)
+        get_db().execute("UPDATE users SET is_admin=1 WHERE id=?", (registered["user"]["id"],))
+        status, queue = client.request("GET", "/api/admin/submissions")
+        self.assertEqual(status, 200, queue)
+        self.assertEqual(queue["submissions"][0]["status"], "pending")
+        submission_id = submitted["submission"]["id"]
+        status, reviewed = client.request("POST", f"/api/admin/submissions/{submission_id}/review", {
+            "action": "approve",
+            "title": "Bermuda Rectangle",
+            "rating": 1600,
+            "roundNumber": 1117,
+            "division": "Div. 2",
+            "contestTime": 1786977300,
+            "brain": True,
+            "reviewNote": "Unique crop verified.",
+        })
+        self.assertEqual(status, 200, reviewed)
+        variants = get_db().execute(
+            "SELECT COUNT(*) n FROM aliases WHERE contest_id=2257 AND problem_index='D'"
+        ).fetchone()["n"]
+        self.assertGreaterEqual(variants, 2)
+        submission = get_db().execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
+        self.assertEqual(submission["status"], "approved")
+        self.assertTrue(submission["image_path"])
+
+    def test_existing_alias_schema_migrates_without_losing_data(self):
+        from cfshot import db as db_module
+
+        legacy_dir = tempfile.TemporaryDirectory()
+        previous_dir = os.environ["DATA_DIR"]
+        previous_conn = db_module._local.conn
+        try:
+            os.environ["DATA_DIR"] = legacy_dir.name
+            db_module._local.conn = None
+            path = os.path.join(legacy_dir.name, "cfsnap.db")
+            conn = sqlite3.connect(path)
+            conn.executescript(
+                """
+                CREATE TABLE questions (id INTEGER PRIMARY KEY);
+                CREATE TABLE aliases (
+                    id INTEGER PRIMARY KEY,
+                    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+                    contest_id INTEGER NOT NULL,
+                    problem_index TEXT NOT NULL,
+                    round_number INTEGER NOT NULL,
+                    division TEXT NOT NULL,
+                    UNIQUE(contest_id, problem_index)
+                );
+                INSERT INTO questions(id) VALUES(1);
+                INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division)
+                VALUES(1,2257,'D',1117,'Div. 2');
+                """
+            )
+            conn.close()
+            migrated = db_module.get_db()
+            db_module._migrate_aliases(migrated)
+            migrated.execute("INSERT INTO questions(id) VALUES(2)")
+            migrated.execute(
+                "INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(2,2257,'D',1117,'Div. 2')"
+            )
+            self.assertEqual(migrated.execute("SELECT COUNT(*) FROM aliases").fetchone()[0], 2)
+            migrated.close()
+        finally:
+            os.environ["DATA_DIR"] = previous_dir
+            db_module._local.conn = previous_conn
+            legacy_dir.cleanup()
 
 
 if __name__ == "__main__":

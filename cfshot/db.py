@@ -44,6 +44,7 @@ def init_db():
             best_streak INTEGER NOT NULL DEFAULT 0,
             games INTEGER NOT NULL DEFAULT 0,
             wins INTEGER NOT NULL DEFAULT 0,
+            is_admin INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sessions (
@@ -61,6 +62,9 @@ def init_db():
             contest_time INTEGER NOT NULL,
             round_type TEXT NOT NULL,
             source_url TEXT NOT NULL,
+            clue_kind TEXT NOT NULL DEFAULT 'statement',
+            image_path TEXT,
+            brain INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1,
             unique_checked INTEGER NOT NULL DEFAULT 1
         );
@@ -71,7 +75,7 @@ def init_db():
             problem_index TEXT NOT NULL,
             round_number INTEGER NOT NULL,
             division TEXT NOT NULL,
-            UNIQUE(contest_id, problem_index)
+            UNIQUE(question_id, contest_id, problem_index)
         );
         CREATE TABLE IF NOT EXISTS quiz_rounds (
             token TEXT PRIMARY KEY,
@@ -125,11 +129,35 @@ def init_db():
             created_at REAL NOT NULL,
             UNIQUE(match_id, round_index, user_id)
         );
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            contest_id INTEGER NOT NULL,
+            problem_index TEXT NOT NULL,
+            clue_kind TEXT NOT NULL,
+            image_path TEXT,
+            clue_text TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            suggested_brain INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewer_id INTEGER REFERENCES users(id),
+            review_note TEXT NOT NULL DEFAULT '',
+            reviewed_at INTEGER,
+            question_id INTEGER REFERENCES questions(id),
+            created_at INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_alias_question ON aliases(question_id);
         CREATE INDEX IF NOT EXISTS idx_attempt_user ON attempts(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_match_code ON matches(code);
+        CREATE INDEX IF NOT EXISTS idx_submission_status ON submissions(status, created_at DESC);
         """
     )
+    _ensure_column(db, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "questions", "clue_kind", "TEXT NOT NULL DEFAULT 'statement'")
+    _ensure_column(db, "questions", "image_path", "TEXT")
+    _ensure_column(db, "questions", "brain", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "submissions", "clue_text", "TEXT NOT NULL DEFAULT ''")
+    _migrate_aliases(db)
     seed_questions(db)
     db.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
 
@@ -141,16 +169,18 @@ def seed_questions(db=None):
         for item in SEED_QUESTIONS:
             db.execute(
                 """
-                INSERT INTO questions(canonical_key, title, clue, rating, contest_time, round_type, source_url)
-                VALUES(?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO questions(canonical_key, title, clue, rating, contest_time, round_type, source_url, clue_kind, image_path, brain)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(canonical_key) DO UPDATE SET
                     title=excluded.title, clue=excluded.clue, rating=excluded.rating,
                     contest_time=excluded.contest_time, round_type=excluded.round_type,
-                    source_url=excluded.source_url
+                    source_url=excluded.source_url, clue_kind=excluded.clue_kind,
+                    image_path=excluded.image_path, brain=excluded.brain
                 """,
                 (
                     item["key"], item["title"], item["clue"], item["rating"],
                     item["contest_time"], item["round_type"], item["source_url"],
+                    item.get("clue_kind", "statement"), item.get("image_path"), item.get("brain", 0),
                 ),
             )
             qid = db.execute("SELECT id FROM questions WHERE canonical_key=?", (item["key"],)).fetchone()["id"]
@@ -159,9 +189,8 @@ def seed_questions(db=None):
                     """
                     INSERT INTO aliases(question_id, contest_id, problem_index, round_number, division)
                     VALUES(?, ?, ?, ?, ?)
-                    ON CONFLICT(contest_id, problem_index) DO UPDATE SET
-                        question_id=excluded.question_id, round_number=excluded.round_number,
-                        division=excluded.division
+                    ON CONFLICT(question_id, contest_id, problem_index) DO UPDATE SET
+                        round_number=excluded.round_number, division=excluded.division
                     """,
                     (qid, contest_id, index, round_number, division),
                 )
@@ -195,13 +224,14 @@ def public_user(row):
         "bestStreak": row["best_streak"],
         "games": row["games"],
         "wins": row["wins"],
+        "isAdmin": bool(row["is_admin"]),
     }
 
 
 def parse_filters(raw):
     raw = raw or {}
     difficulty = raw.get("difficulty", "medium")
-    if difficulty not in {"easy", "medium", "hard", "all"}:
+    if difficulty not in {"easy", "medium", "hard", "all", "brain"}:
         difficulty = "medium"
     return {
         "difficulty": difficulty,
@@ -224,12 +254,16 @@ def matching_question_ids(filters, limit=100):
     filters = parse_filters(filters)
     where = ["q.active=1", "q.unique_checked=1"]
     params = []
-    if filters["difficulty"] == "easy":
-        where.append("q.rating <= 1200")
+    if filters["difficulty"] == "brain":
+        where.append("q.brain=1")
+    elif filters["difficulty"] == "easy":
+        where.extend(["q.rating <= 1200", "q.brain=0"])
     elif filters["difficulty"] == "medium":
-        where.append("q.rating BETWEEN 1300 AND 1900")
+        where.extend(["q.rating BETWEEN 1300 AND 1900", "q.brain=0"])
     elif filters["difficulty"] == "hard":
-        where.append("q.rating >= 2000")
+        where.extend(["q.rating >= 2000", "q.brain=0"])
+    else:
+        where.append("q.brain=0")
     if filters["contestMin"] is not None:
         where.append("EXISTS (SELECT 1 FROM aliases a WHERE a.question_id=q.id AND a.contest_id>=?)")
         params.append(filters["contestMin"])
@@ -260,3 +294,36 @@ def load_json(value, default=None):
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def _ensure_column(db, table, column, definition):
+    columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _migrate_aliases(db):
+    schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='aliases'").fetchone()["sql"]
+    if "UNIQUE(contest_id, problem_index)" not in schema.replace("\n", " "):
+        return
+    db.execute("PRAGMA foreign_keys = OFF")
+    db.executescript(
+        """
+        BEGIN IMMEDIATE;
+        CREATE TABLE aliases_new (
+            id INTEGER PRIMARY KEY,
+            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            contest_id INTEGER NOT NULL,
+            problem_index TEXT NOT NULL,
+            round_number INTEGER NOT NULL,
+            division TEXT NOT NULL,
+            UNIQUE(question_id, contest_id, problem_index)
+        );
+        INSERT INTO aliases_new SELECT * FROM aliases;
+        DROP TABLE aliases;
+        ALTER TABLE aliases_new RENAME TO aliases;
+        CREATE INDEX idx_alias_question ON aliases(question_id);
+        COMMIT;
+        """
+    )
+    db.execute("PRAGMA foreign_keys = ON")

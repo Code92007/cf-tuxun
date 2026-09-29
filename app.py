@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlparse
 
 from cfshot.db import (
     aliases_for,
+    db_path,
     dump_json,
     get_db,
     init_db,
@@ -43,6 +44,12 @@ CONTEST_ANSWER_RE = re.compile(r"^\s*(\d{1,6})\s*[-_/ ]?\s*([A-Za-z][A-Za-z0-9]?
 INDEX_RE = re.compile(r"^[A-Z][A-Z0-9]?")
 RATE_BUCKETS = defaultdict(deque)
 RATE_LOCK = threading.Lock()
+MAX_UPLOAD_BYTES = 3 * 1024 * 1024
+IMAGE_FORMATS = {
+    "image/png": (".png", b"\x89PNG\r\n\x1a\n"),
+    "image/jpeg": (".jpg", b"\xff\xd8\xff"),
+    "image/webp": (".webp", b"RIFF"),
+}
 
 
 def now():
@@ -139,7 +146,7 @@ def question_public(question, token, difficulty):
     divisions = sorted({a["division"] for a in aliases})
     return {
         "token": token,
-        "clueUrl": f"/api/clues/{token}.svg",
+        "clueUrl": f"/api/clues/{token}",
         "difficulty": difficulty,
         "needsDivision": len(divisions) > 1,
         "divisions": divisions if len(divisions) > 1 else [],
@@ -149,7 +156,7 @@ def question_public(question, token, difficulty):
 
 def make_clue_svg(question, difficulty="medium"):
     clue = question["clue"].strip()
-    widths = {"easy": 80, "medium": 75, "hard": 70, "all": 75}
+    widths = {"easy": 80, "medium": 75, "hard": 70, "all": 75, "brain": 70}
     lines = []
     for paragraph in clue.split("\n"):
         lines.extend(textwrap.wrap(paragraph, width=widths.get(difficulty, 75), break_long_words=False) or [""])
@@ -160,7 +167,7 @@ def make_clue_svg(question, difficulty="medium"):
         escaped_lines.append(
             f'<text x="108" y="{start_y + i * line_height}" class="body">{html.escape(line)}</text>'
         )
-    label = {"easy": "EASY", "medium": "MEDIUM", "hard": "HARD", "all": "MIXED"}.get(difficulty, "MEDIUM")
+    label = {"easy": "EASY", "medium": "MEDIUM", "hard": "HARD", "all": "MIXED", "brain": "BRAIN"}.get(difficulty, "MEDIUM")
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
 <rect width="1280" height="760" fill="#e8ebed"/>
 <rect x="58" y="48" width="1164" height="664" rx="4" fill="#ffffff" stroke="#c8cdd1"/>
@@ -185,6 +192,23 @@ text {{ font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial
 def random_room_code():
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(6))
+
+
+def decode_image_data(data_url):
+    match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)", str(data_url))
+    if not match or match.group(1) not in IMAGE_FORMATS:
+        raise ValueError("只支持 PNG、JPEG 或 WebP 图片")
+    try:
+        data = base64.b64decode(match.group(2), validate=True)
+    except ValueError as exc:
+        raise ValueError("图片编码无效") from exc
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError("图片必须小于 3 MB")
+    mime = match.group(1)
+    suffix, signature = IMAGE_FORMATS[mime]
+    if not data.startswith(signature) or (mime == "image/webp" and data[8:12] != b"WEBP"):
+        raise ValueError("图片内容与文件格式不符")
+    return data, mime, suffix
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -217,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
             size = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             size = 0
-        if size > 64 * 1024:
+        if size > 5 * 1024 * 1024:
             raise ValueError("请求内容过大")
         try:
             return json.loads(self.rfile.read(size) or b"{}")
@@ -248,6 +272,15 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return session
 
+    def require_admin(self, csrf=False):
+        session = self.require_user(csrf=csrf)
+        if not session:
+            return None
+        if not session["is_admin"]:
+            self.json(403, error="需要管理员权限")
+            return None
+        return session
+
     def client_key(self, suffix):
         forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
         return f"{forwarded or self.client_address[0]}:{suffix}"
@@ -262,8 +295,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_config()
         if path == "/api/leaderboard":
             return self.get_leaderboard()
-        if path.startswith("/api/clues/") and path.endswith(".svg"):
+        if path.startswith("/api/clues/"):
             return self.get_clue(path)
+        if path == "/api/submissions/mine":
+            return self.get_my_submissions()
+        if path == "/api/admin/submissions":
+            return self.get_admin_submissions()
+        if path.startswith("/api/submissions/") and path.endswith("/image"):
+            return self.get_submission_image(path)
         if path.startswith("/api/matches/") and path.endswith("/clue.svg"):
             return self.get_match_clue(path)
         if path.startswith("/api/matches/"):
@@ -286,6 +325,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.quiz_next(payload)
         if path == "/api/quiz/answer":
             return self.quiz_answer(payload)
+        if path == "/api/submissions":
+            return self.create_submission(payload)
+        if path.startswith("/api/admin/submissions/") and path.endswith("/review"):
+            return self.review_submission(path, payload)
         if path == "/api/matches":
             return self.create_match(payload)
         if path == "/api/matches/join":
@@ -419,6 +462,202 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchall()
         return self.json(players=[public_user(row) for row in rows])
 
+    def submission_public(self, row):
+        return {
+            "id": row["id"],
+            "username": row["username"] if "username" in row.keys() else None,
+            "answer": f'{row["contest_id"]}{row["problem_index"]}',
+            "clueKind": row["clue_kind"],
+            "imageUrl": f'/api/submissions/{row["id"]}/image' if row["image_path"] else None,
+            "textClue": row["clue_text"],
+            "note": row["note"],
+            "suggestedBrain": bool(row["suggested_brain"]),
+            "status": row["status"],
+            "reviewNote": row["review_note"],
+            "createdAt": row["created_at"],
+        }
+
+    def create_submission(self, payload):
+        session = self.require_user(csrf=True)
+        if not session:
+            return
+        if rate_limited(f'user:{session["id"]}:submission', 10, 3600):
+            return self.json(429, error="投稿过于频繁，请稍后再试")
+        match = CONTEST_ANSWER_RE.fullmatch(str(payload.get("answer", "")))
+        if not match:
+            return self.json(400, error="题号请使用 2257D 这样的格式")
+        contest_id, problem_index = int(match.group(1)), match.group(2).upper()
+        clue_kind = str(payload.get("clueKind", "image"))
+        if clue_kind not in {"image", "fragment"}:
+            return self.json(400, error="线索类型无效")
+        note = str(payload.get("note", "")).strip()[:1000]
+        clue_text = str(payload.get("textClue", "")).strip()[:3000]
+        image_path = None
+        if payload.get("imageData"):
+            try:
+                image_data, _, suffix = decode_image_data(payload["imageData"])
+            except ValueError as exc:
+                return self.json(400, error=str(exc))
+            upload_dir = Path(db_path()).parent / "uploads"
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{int(now())}-{secrets.token_hex(12)}{suffix}"
+            (upload_dir / filename).write_bytes(image_data)
+            image_path = f"uploads/{filename}"
+        if not image_path and len(clue_text) < 12:
+            return self.json(400, error="请上传图片，或填写至少 12 个字符的文字线索")
+        cursor = get_db().execute(
+            """
+            INSERT INTO submissions(user_id,contest_id,problem_index,clue_kind,image_path,clue_text,note,suggested_brain,status,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                session["id"], contest_id, problem_index, clue_kind, image_path, clue_text,
+                note, int(bool(payload.get("suggestedBrain"))), "pending", int(now()),
+            ),
+        )
+        return self.json(submission={"id": cursor.lastrowid, "status": "pending"})
+
+    def get_my_submissions(self):
+        session = self.require_user()
+        if not session:
+            return
+        rows = get_db().execute(
+            """
+            SELECT s.*,u.username FROM submissions s JOIN users u ON u.id=s.user_id
+            WHERE s.user_id=? ORDER BY s.created_at DESC LIMIT 100
+            """,
+            (session["id"],),
+        ).fetchall()
+        return self.json(submissions=[self.submission_public(row) for row in rows])
+
+    def get_admin_submissions(self):
+        session = self.require_admin()
+        if not session:
+            return
+        rows = get_db().execute(
+            """
+            SELECT s.*,u.username FROM submissions s JOIN users u ON u.id=s.user_id
+            ORDER BY CASE s.status WHEN 'pending' THEN 0 ELSE 1 END,s.created_at DESC LIMIT 200
+            """
+        ).fetchall()
+        return self.json(submissions=[self.submission_public(row) for row in rows])
+
+    def get_submission_image(self, path):
+        session = self.require_user()
+        if not session:
+            return
+        try:
+            submission_id = int(path.split("/")[-2])
+        except ValueError:
+            return self.send_error(404)
+        row = get_db().execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
+        if not row or not row["image_path"] or (row["user_id"] != session["id"] and not session["is_admin"]):
+            return self.send_error(404)
+        return self.send_image_path(row["image_path"])
+
+    def review_submission(self, path, payload):
+        session = self.require_admin(csrf=True)
+        if not session:
+            return
+        try:
+            submission_id = int(path.rstrip("/").split("/")[-2])
+        except ValueError:
+            return self.json(404, error="投稿不存在")
+        db = get_db()
+        submission = db.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
+        if not submission:
+            return self.json(404, error="投稿不存在")
+        if submission["status"] != "pending":
+            return self.json(409, error="这条投稿已经审核")
+        action = payload.get("action")
+        review_note = str(payload.get("reviewNote", "")).strip()[:1000]
+        if action == "reject":
+            db.execute(
+                "UPDATE submissions SET status='rejected',reviewer_id=?,review_note=?,reviewed_at=? WHERE id=?",
+                (session["id"], review_note, int(now()), submission_id),
+            )
+            return self.json(ok=True, submissionStatus="rejected")
+        if action != "approve":
+            return self.json(400, error="审核操作无效")
+        title = str(payload.get("title", "")).strip()[:200]
+        division = str(payload.get("division", "Div. 2")).strip()[:40]
+        try:
+            rating = int(payload.get("rating"))
+            round_number = int(payload.get("roundNumber"))
+            contest_time = int(payload.get("contestTime") or now())
+        except (TypeError, ValueError):
+            return self.json(400, error="rating、Round 和比赛时间必须是数字")
+        if not title or not 800 <= rating <= 4000 or round_number < 1:
+            return self.json(400, error="请填写有效的题名、rating 和 Round")
+        key = f'{submission["contest_id"]}{submission["problem_index"]}@submission{submission_id}'
+        clue_text = submission["clue_text"] or submission["note"] or "User-submitted visual clue reviewed for unique recognition."
+        brain = int(bool(payload.get("brain", submission["suggested_brain"])))
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = db.execute(
+                """
+                INSERT INTO questions(canonical_key,title,clue,rating,contest_time,round_type,source_url,clue_kind,image_path,brain,active,unique_checked)
+                VALUES(?,?,?,?,?,?,?,?,?,?,1,1)
+                """,
+                (
+                    key, title, clue_text, rating, contest_time, division,
+                    f'https://codeforces.com/contest/{submission["contest_id"]}/problem/{submission["problem_index"]}',
+                    submission["clue_kind"], submission["image_path"], brain,
+                ),
+            )
+            question_id = cursor.lastrowid
+            db.execute(
+                "INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
+                (question_id, submission["contest_id"], submission["problem_index"], round_number, division),
+            )
+            db.execute(
+                """
+                UPDATE submissions SET status='approved',reviewer_id=?,review_note=?,reviewed_at=?,question_id=? WHERE id=?
+                """,
+                (session["id"], review_note, int(now()), question_id, submission_id),
+            )
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        return self.json(ok=True, submissionStatus="approved", questionId=question_id)
+
+    def resolve_image_path(self, stored_path):
+        if not stored_path:
+            return None
+        if stored_path.startswith("static/questions/"):
+            base = (ROOT / "static" / "questions").resolve()
+            target = (ROOT / stored_path).resolve()
+        else:
+            base = Path(db_path()).parent.resolve()
+            target = (base / stored_path).resolve()
+        if target != base and base not in target.parents:
+            return None
+        return target if target.is_file() else None
+
+    def send_image_path(self, stored_path):
+        target = self.resolve_image_path(stored_path)
+        if not target:
+            return self.send_error(404)
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_question_clue(self, question, difficulty):
+        if question["image_path"]:
+            return self.send_image_path(question["image_path"])
+        svg = make_clue_svg(question, difficulty).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(svg)))
+        self.send_header("Cache-Control", "private, no-store")
+        self.end_headers()
+        self.wfile.write(svg)
+
     def quiz_next(self, payload):
         session = self.require_user(csrf=True)
         if not session:
@@ -448,7 +687,7 @@ class Handler(BaseHTTPRequestHandler):
         session = self.require_user()
         if not session:
             return
-        token = path.rsplit("/", 1)[-1][:-4]
+        token = path.rsplit("/", 1)[-1].split(".", 1)[0]
         row = get_db().execute(
             """
             SELECT qr.difficulty, q.* FROM quiz_rounds qr
@@ -459,13 +698,7 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if not row:
             return self.send_error(404)
-        svg = make_clue_svg(row, row["difficulty"]).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
-        self.send_header("Content-Length", str(len(svg)))
-        self.send_header("Cache-Control", "private, no-store")
-        self.end_headers()
-        self.wfile.write(svg)
+        return self.send_question_clue(row, row["difficulty"])
 
     def quiz_answer(self, payload):
         session = self.require_user(csrf=True)
@@ -486,7 +719,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(400, error=error)
         elapsed_ms = min(180_000, max(0, int((now() - round_row["started_at"]) * 1000)))
         streak = session["streak"] + 1 if correct else 0
-        multiplier = {"easy": 0.8, "medium": 1.0, "hard": 1.2}.get(round_row["difficulty"], 1.0)
+        multiplier = {"easy": 0.8, "medium": 1.0, "hard": 1.2, "brain": 1.5}.get(round_row["difficulty"], 1.0)
         base = max(150, 1000 - elapsed_ms // 45)
         points = int((base + min(streak, 10) * 30) * multiplier) if correct else 0
         db.execute("BEGIN IMMEDIATE")
@@ -736,13 +969,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         question = get_db().execute("SELECT * FROM questions WHERE id=?", (question_ids[match["round_index"]],)).fetchone()
         difficulty = load_json(match["filters_json"], {}).get("difficulty", "medium")
-        svg = make_clue_svg(question, difficulty).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
-        self.send_header("Content-Length", str(len(svg)))
-        self.send_header("Cache-Control", "private, no-store")
-        self.end_headers()
-        self.wfile.write(svg)
+        return self.send_question_clue(question, difficulty)
 
     def answer_match(self, path, payload):
         session = self.require_user(csrf=True)

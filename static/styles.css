@@ -108,6 +108,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shado
 .field-group { margin: 26px 0; }
 .field-label { display: block; margin-bottom: 9px; color: #343b3f; font-size: 13px; font-weight: 700; }
 .inline-number { max-width: 240px; margin-top: 12px; }
+#solo-rating-rule, #solo-attempt-rule { margin: 10px 0 0; }
 .segmented { display: flex; flex-wrap: wrap; gap: 6px; }
 .segmented button { min-height: 42px; padding: 9px 15px; border: 1px solid #c8ced1; border-radius: 4px; background: #fff; color: #535d62; font-weight: 700; }
 .segmented button small { display: block; margin-top: 2px; color: #8a9398; font-size: 10px; }

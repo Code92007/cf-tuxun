@@ -162,6 +162,10 @@ class AppTest(unittest.TestCase):
             "answerMode": "round", "roundNumber": educational["round_number"],
             "division": "e", "roundIndex": educational["problem_index"],
         })[0])
+        self.assertTrue(check_answer(educational["question_id"], {
+            "answerMode": "round", "roundNumber": educational["round_number"],
+            "division": "E", "roundIndex": educational["problem_index"],
+        })[0])
         invalid_division = check_answer(single["id"], {
             "answerMode": "round", "roundNumber": 1078, "division": "5", "roundIndex": "A",
         })

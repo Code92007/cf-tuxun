@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=2">
+  <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -52,6 +52,7 @@
         <button class="nav-item" data-view="battle" type="button"><span aria-hidden="true">⚔</span>双人对战</button>
         <button class="nav-item" data-view="submit" type="button"><span aria-hidden="true">＋</span>投稿线索</button>
         <button id="admin-nav" class="nav-item hidden" data-view="admin" type="button"><span aria-hidden="true">✓</span>审核投稿</button>
+        <button id="permissions-nav" class="nav-item hidden" data-view="permissions" type="button"><span aria-hidden="true">⚿</span>权限管理</button>
         <button class="nav-item" data-view="leaderboard" type="button"><span aria-hidden="true">▥</span>排行榜</button>
       </nav>
       <div class="side-account">
@@ -106,6 +107,17 @@
               <p class="kicker">QUESTION POOL</p>
               <h3>选择本局范围</h3>
               <div class="field-group">
+                <span class="field-label">计分模式</span>
+                <div class="segmented" id="solo-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div>
+                <p id="solo-rating-rule" class="form-hint hidden">固定混合难度和 120 秒倒计时；Contest ID 至少跨度 200、时间至少覆盖 3 年，且筛选后不少于 8 题。</p>
+              </div>
+              <div class="field-group">
+                <span class="field-label">计时方式</span>
+                <div class="segmented" id="solo-timing"><button class="active" type="button" data-value="false">不限时</button><button type="button" data-value="true">倒计时</button></div>
+                <label id="solo-time-limit-wrap" class="inline-number hidden">每题时长（秒）<input id="solo-time-limit" type="number" min="30" max="600" step="15" value="120"></label>
+                <p id="solo-attempt-rule" class="form-hint hidden">倒计时内最多尝试 10 次，两次提交至少间隔 5 秒。</p>
+              </div>
+              <div class="field-group">
                 <span class="field-label">难度</span>
                 <div class="segmented" id="solo-difficulty">
                   <button type="button" data-value="easy">简单 <small>≤1200</small></button>
@@ -134,14 +146,16 @@
               <span class="note-index">01</span><h4>判题说明</h4>
               <p>题面标题、题号与场次信息会被隐藏。所有入库线索均经过长度与重复检查。</p>
               <p>共享题可回答任意一套 Contest ID；使用 Round 写法时需要选择 Div.</p>
+              <p>Rating 模式按用户与题目 rating 的 Elo 期望分结算；放弃或结束未答题目按答错处理。</p>
             </aside>
           </div>
 
           <section id="solo-game" class="game-layout hidden">
             <div class="game-head">
               <div class="game-progress"><span id="solo-round-label">第 1 题</span><div><i id="solo-progress"></i></div></div>
-              <div class="timer"><span>用时</span><strong id="solo-timer">00:00</strong></div>
+              <div class="timer"><span id="solo-timer-label">用时</span><strong id="solo-timer">00:00</strong></div>
             </div>
+            <div class="solo-session-actions"><div class="solo-session-meta"><span id="solo-mode-status" class="mode-badge">娱乐模式</span><span id="solo-attempts-status" class="attempts-status hidden">0 / 10 次</span></div><div><button id="abandon-solo" class="danger-btn" type="button">放弃此题</button><button id="end-solo" class="secondary" type="button">结束本次</button></div></div>
             <figure class="clue-frame"><img id="solo-clue" alt="隐藏标题和题号的 Codeforces 题面截图"></figure>
             <section class="answer-panel">
               <div class="answer-mode segmented compact">
@@ -182,7 +196,7 @@
           </div>
 
           <section id="battle-room" class="battle-room hidden">
-            <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><span id="room-mode" class="mode-badge">娱乐模式</span></header>
+            <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><div class="room-actions"><span id="room-mode" class="mode-badge">娱乐模式</span><button id="exit-room" class="secondary room-exit" type="button">退出房间</button></div></header>
             <div id="lobby-state" class="lobby-state">
               <div id="battle-players" class="player-versus"></div>
               <p id="lobby-message">等待另一位玩家加入...</p>
@@ -212,8 +226,13 @@
               <form id="submission-form" class="stack-form">
                 <label>对应题号<input id="submission-answer" autocomplete="off" maxlength="10" placeholder="例如 2257D" required></label>
                 <div class="field-group"><span class="field-label">线索类型</span><div id="submission-kind" class="segmented"><button class="active" data-value="image" type="button">题面图片</button><button data-value="fragment" type="button">文字碎片</button></div></div>
-                <label>上传裁图（PNG / JPEG / WebP，最大 3 MB）<input id="submission-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
-                <figure id="submission-preview-wrap" class="upload-preview hidden"><img id="submission-preview" alt="待投稿线索预览"></figure>
+                <div class="image-input-block">
+                  <span class="field-label">添加截图（PNG / JPEG / WebP，最大 3 MB）</span>
+                  <button id="paste-screenshot" class="secondary" type="button">粘贴截图</button>
+                  <p class="form-hint">使用系统截图后可直接按 Ctrl/Cmd+V，也可以把图片拖到下方。</p>
+                  <label id="submission-drop-zone" class="file-picker drop-zone"><strong>拖拽图片到这里</strong><span>或点击从本地选择</span><input id="submission-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+                </div>
+                <figure id="submission-preview-wrap" class="upload-preview hidden"><img id="submission-preview" alt="待投稿线索预览"><figcaption><span id="submission-image-source">图片已添加</span><button id="remove-submission-image" class="text-btn" type="button">移除图片</button></figcaption></figure>
                 <label>或直接填写文字线索<textarea id="submission-text" rows="4" maxlength="3000" placeholder="图片和文字至少提供一种"></textarea></label>
                 <label>补充说明<textarea id="submission-note" rows="3" maxlength="1000" placeholder="说明为什么这段线索能够唯一辨认，可选"></textarea></label>
                 <label class="check-line"><input id="submission-brain" type="checkbox"> 建议放入“最强大脑”题池</label>
@@ -236,6 +255,14 @@
           </section>
         </section>
 
+        <section id="view-permissions" class="view">
+          <section class="section-block permissions-block">
+            <div class="section-head"><div><p class="kicker">ACCESS CONTROL</p><h3>权限管理</h3></div><button id="refresh-permissions" class="text-btn" type="button">刷新</button></div>
+            <p class="section-copy">超级管理员可以授予或撤销投稿审核权限。普通管理员只能审核投稿，不能修改任何用户权限。</p>
+            <div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>注册时间</th><th>操作</th></tr></thead><tbody id="permissions-body"><tr><td colspan="4">加载中...</td></tr></tbody></table></div>
+          </section>
+        </section>
+
         <section id="view-leaderboard" class="view">
           <section class="section-block leaderboard-block">
             <div class="section-head"><div><p class="kicker">GLOBAL RANKING</p><h3>Rating 排行榜</h3></div><button id="refresh-board" class="text-btn" type="button">刷新</button></div>
@@ -245,6 +272,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=2" defer></script>
+  <script src="/static/app.js?v=6" defer></script>
 </body>
 </html>

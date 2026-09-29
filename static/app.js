@@ -3,10 +3,12 @@ const state = {
   csrf: "",
   authMode: "login",
   view: "dashboard",
-  solo: { filters: null, question: null, answerMode: "contest", round: 0, startedAt: 0, timer: null },
+  solo: { filters: null, question: null, answerMode: "contest", rated: false, resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, startedAt: 0, timer: null, retryTimer: null },
   battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0 },
   uploadData: "",
 };
+
+const MAX_SUBMISSION_IMAGE_BYTES = 3 * 1024 * 1024;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -35,6 +37,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(payload.error || `请求失败 (${response.status})`);
     error.status = response.status;
+    error.payload = payload;
     throw error;
   }
   return payload;
@@ -74,6 +77,7 @@ function renderUser() {
   $("#metric-streak").textContent = u.bestStreak;
   $("#rating-tier").textContent = ratingTier(u.rating);
   $("#admin-nav").classList.toggle("hidden", !u.isAdmin);
+  $("#permissions-nav").classList.toggle("hidden", !u.isSuperAdmin);
 }
 
 function ratingTier(rating) {
@@ -97,6 +101,7 @@ const viewMeta = {
   battle: ["VERSUS", "双人对战"],
   submit: ["CONTRIBUTE", "投稿线索"],
   admin: ["MODERATION", "审核投稿"],
+  permissions: ["ACCESS CONTROL", "权限管理"],
   leaderboard: ["RANKING", "排行榜"],
 };
 
@@ -110,6 +115,7 @@ function showView(name) {
   if (name === "leaderboard") loadLeaderboard();
   if (name === "submit") loadMySubmissions();
   if (name === "admin") loadAdminSubmissions();
+  if (name === "permissions") loadPermissionUsers();
   if (name !== "battle" && state.battle.poll) stopBattlePoll();
   if (name === "battle" && state.battle.code) startBattlePoll();
 }
@@ -163,8 +169,32 @@ function soloFilters() {
   };
 }
 
+function updateSoloModeControls() {
+  const rated = selectedValue("#solo-mode") === "true";
+  const difficultyButtons = $$("#solo-difficulty button");
+  if (rated) selectSegment($("#solo-difficulty"), $("#solo-difficulty button[data-value='all']"));
+  difficultyButtons.forEach(button => { button.disabled = rated; });
+  $("#solo-rating-rule").classList.toggle("hidden", !rated);
+  if (rated) {
+    selectSegment($("#solo-timing"), $("#solo-timing button[data-value='true']"));
+    $("#solo-time-limit").value = "120";
+  }
+  $$("#solo-timing button").forEach(button => { button.disabled = rated; });
+  $("#solo-time-limit").disabled = rated;
+  updateSoloTimingControls();
+}
+
+function updateSoloTimingControls() {
+  const timed = selectedValue("#solo-timing") === "true";
+  $("#solo-time-limit-wrap").classList.toggle("hidden", !timed);
+  $("#solo-attempt-rule").classList.toggle("hidden", !timed);
+}
+
 async function startSolo() {
   state.solo.filters = soloFilters();
+  state.solo.rated = selectedValue("#solo-mode") === "true";
+  state.solo.timed = state.solo.rated || selectedValue("#solo-timing") === "true";
+  state.solo.timeLimit = state.solo.rated ? 120 : Number($("#solo-time-limit").value || 120);
   state.solo.round = 0;
   $("#solo-setup").classList.add("hidden");
   $("#solo-game").classList.remove("hidden");
@@ -175,8 +205,18 @@ async function nextSoloQuestion() {
   const button = $("#solo-start");
   try {
     setButtonBusy(button, true, "正在抽题...");
-    const payload = await api("/api/quiz/next", { method: "POST", body: { filters: state.solo.filters } });
+    const payload = await api("/api/quiz/next", {
+      method: "POST",
+      body: { filters: state.solo.filters, rated: state.solo.rated, timed: state.solo.timed, timeLimit: state.solo.timeLimit },
+    });
     state.solo.question = payload.question;
+    state.solo.rated = payload.rated;
+    state.solo.resolved = false;
+    state.solo.settling = false;
+    state.solo.timed = payload.question.timed;
+    state.solo.timeLimit = payload.question.timeLimit;
+    state.solo.maxAttempts = payload.question.maxAttempts;
+    state.solo.attemptsUsed = 0;
     state.solo.round += 1;
     state.solo.startedAt = Date.now();
     $("#solo-round-label").textContent = `第 ${state.solo.round} 题`;
@@ -185,6 +225,14 @@ async function nextSoloQuestion() {
     $("#solo-result").className = "result-strip hidden";
     $("#solo-result").innerHTML = "";
     $("#solo-answer-form").classList.remove("hidden");
+    $("#abandon-solo").classList.remove("hidden");
+    $("#abandon-solo").disabled = false;
+    $("#solo-answer-form .submit-answer").disabled = false;
+    $("#solo-answer-form .submit-answer").textContent = "提交答案";
+    $("#solo-mode-status").textContent = state.solo.rated ? "Rating 模式" : "娱乐模式";
+    $("#solo-attempts-status").classList.toggle("hidden", !state.solo.timed);
+    $("#solo-attempts-status").textContent = `0 / ${state.solo.maxAttempts} 次`;
+    $("#solo-timer-label").textContent = state.solo.timed ? "剩余" : "用时";
     $("#solo-answer-form").reset();
     renderDivisionChoices("solo", payload.question);
     setSoloAnswerMode("contest");
@@ -193,6 +241,8 @@ async function nextSoloQuestion() {
     state.solo.timer = setInterval(updateSoloTimer, 250);
     updateSoloTimer();
   } catch (error) {
+    state.solo.question = null;
+    state.solo.resolved = true;
     $("#solo-setup").classList.remove("hidden");
     $("#solo-game").classList.add("hidden");
     toast(error.message, "error");
@@ -203,7 +253,9 @@ async function nextSoloQuestion() {
 
 function updateSoloTimer() {
   const elapsed = Math.floor((Date.now() - state.solo.startedAt) / 1000);
-  $("#solo-timer").textContent = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+  const shown = state.solo.timed ? Math.max(0, state.solo.timeLimit - elapsed) : elapsed;
+  $("#solo-timer").textContent = `${String(Math.floor(shown / 60)).padStart(2, "0")}:${String(shown % 60).padStart(2, "0")}`;
+  if (state.solo.timed && shown <= 0 && !state.solo.resolved && !state.solo.settling) timeoutSoloQuestion();
 }
 
 function renderDivisionChoices(prefix, question) {
@@ -265,23 +317,108 @@ async function loadMySubmissions() {
   }
 }
 
-async function previewSubmissionFile(event) {
-  const file = event.target.files[0];
+function clearSubmissionImage() {
   state.uploadData = "";
+  $("#submission-file").value = "";
+  $("#submission-preview").removeAttribute("src");
   $("#submission-preview-wrap").classList.add("hidden");
-  if (!file) return;
-  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024) {
-    event.target.value = "";
-    return toast("只支持 3 MB 以内的 PNG、JPEG 或 WebP", "error");
-  }
-  state.uploadData = await new Promise((resolve, reject) => {
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = reject;
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise(resolve => canvas.toBlob(resolve, type, quality));
+}
+
+async function prepareSubmissionImage(blob) {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(blob.type)) throw new Error("只支持 PNG、JPEG 或 WebP 图片");
+  if (blob.size <= MAX_SUBMISSION_IMAGE_BYTES) return blob;
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, 1920 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const compressed = await canvasToBlob(canvas, "image/webp", 0.88);
+  if (!compressed || compressed.size > MAX_SUBMISSION_IMAGE_BYTES) throw new Error("截图仍超过 3 MB，请截取更小的窗口或区域");
+  return compressed;
+}
+
+async function setSubmissionImage(blob, source) {
+  const prepared = await prepareSubmissionImage(blob);
+  state.uploadData = await blobToDataUrl(prepared);
   $("#submission-preview").src = state.uploadData;
+  $("#submission-image-source").textContent = source;
   $("#submission-preview-wrap").classList.remove("hidden");
+}
+
+async function previewSubmissionFile(event) {
+  const file = event.target.files[0];
+  clearSubmissionImage();
+  if (!file) return;
+  try {
+    await setSubmissionImage(file, `本地图片 · ${file.name}`);
+  } catch (error) {
+    clearSubmissionImage();
+    toast(error.message, "error");
+  }
+}
+
+async function dropSubmissionImage(event) {
+  event.preventDefault();
+  $("#submission-drop-zone").classList.remove("dragging");
+  const file = [...event.dataTransfer.files].find(item => item.type.startsWith("image/"));
+  if (!file) return toast("请拖入 PNG、JPEG 或 WebP 图片", "error");
+  clearSubmissionImage();
+  try {
+    await setSubmissionImage(file, `拖拽图片 · ${file.name}`);
+    toast("图片已添加");
+  } catch (error) {
+    clearSubmissionImage();
+    toast(error.message, "error");
+  }
+}
+
+async function pasteSubmissionScreenshot(event) {
+  const items = event?.clipboardData?.items || [];
+  const imageItem = [...items].find(item => item.type.startsWith("image/"));
+  if (!imageItem) return false;
+  event.preventDefault();
+  try {
+    await setSubmissionImage(imageItem.getAsFile(), "粘贴的截图");
+    $("#submission-file").value = "";
+    toast("截图已粘贴");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+  return true;
+}
+
+async function readSubmissionClipboard() {
+  if (!navigator.clipboard?.read) return toast("请直接按 Ctrl/Cmd+V 粘贴截图", "error");
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const type = item.types.find(value => value.startsWith("image/"));
+      if (type) {
+        await setSubmissionImage(await item.getType(type), "剪贴板截图");
+        $("#submission-file").value = "";
+        toast("截图已粘贴");
+        return;
+      }
+    }
+    toast("剪贴板里没有图片", "error");
+  } catch (_) {
+    toast("无法读取剪贴板，请在表单内按 Ctrl/Cmd+V", "error");
+  }
 }
 
 async function submitClue(event) {
@@ -302,8 +439,7 @@ async function submitClue(event) {
     });
     toast("投稿已进入审核队列");
     $("#submission-form").reset();
-    state.uploadData = "";
-    $("#submission-preview-wrap").classList.add("hidden");
+    clearSubmissionImage();
     selectSegment($("#submission-kind"), $("#submission-kind button[data-value='image']"));
     loadMySubmissions();
   } catch (error) {
@@ -342,6 +478,48 @@ async function loadAdminSubmissions() {
   }
 }
 
+function permissionRole(user) {
+  if (user.isSuperAdmin) return "超级管理员";
+  if (user.isAdmin) return "审核管理员";
+  return "普通用户";
+}
+
+async function loadPermissionUsers() {
+  const body = $("#permissions-body");
+  if (!state.user?.isSuperAdmin) {
+    body.innerHTML = '<tr><td colspan="4">需要超级管理员权限。</td></tr>';
+    return;
+  }
+  body.innerHTML = '<tr><td colspan="4">加载中...</td></tr>';
+  try {
+    const payload = await api("/api/admin/users");
+    body.innerHTML = payload.users.map(user => {
+      const action = user.isSuperAdmin
+        ? '<span class="locked-role">仅服务器可修改</span>'
+        : `<button class="${user.isAdmin ? "danger-btn" : "secondary"} role-action" type="button" data-user-id="${user.id}" data-next-admin="${user.isAdmin ? "false" : "true"}">${user.isAdmin ? "撤销管理员" : "设为管理员"}</button>`;
+      return `<tr><td><strong>${escapeHtml(user.username)}</strong></td><td>${permissionRole(user)}</td><td>${new Date(user.createdAt * 1000).toLocaleDateString("zh-CN")}</td><td>${action}</td></tr>`;
+    }).join("");
+    $$(".role-action", body).forEach(button => button.addEventListener("click", () => changeAdminRole(button)));
+  } catch (error) {
+    body.innerHTML = `<tr><td colspan="4">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+async function changeAdminRole(button) {
+  setButtonBusy(button, true);
+  try {
+    await api(`/api/admin/users/${button.dataset.userId}/role`, {
+      method: "POST",
+      body: { isAdmin: button.dataset.nextAdmin === "true" },
+    });
+    toast(button.dataset.nextAdmin === "true" ? "已授予审核管理员权限" : "已撤销审核管理员权限");
+    loadPermissionUsers();
+  } catch (error) {
+    toast(error.message, "error");
+    setButtonBusy(button, false);
+  }
+}
+
 async function reviewSubmission(item, action) {
   const form = $("form", item);
   const button = action === "approve" ? $(".approve-review", item) : $(".reject-review", item);
@@ -374,25 +552,153 @@ async function reviewSubmission(item, action) {
 async function submitSoloAnswer(event) {
   event.preventDefault();
   const button = $("#solo-answer-form .submit-answer");
+  let cooldown = 0;
   setButtonBusy(button, true, "判定中...");
   try {
     const payload = await api("/api/quiz/answer", {
       method: "POST",
       body: { token: state.solo.question.token, ...answerPayload("solo", state.solo.answerMode) },
     });
-    clearInterval(state.solo.timer);
-    state.user = payload.user;
-    renderUser();
-    $("#solo-answer-form").classList.add("hidden");
-    const result = $("#solo-result");
-    result.className = `result-strip ${payload.correct ? "" : "wrong"}`;
-    result.innerHTML = `<strong>${payload.correct ? `回答正确，+${payload.points} 分` : "没有命中"}</strong><span>${escapeHtml(payload.solution.title)} · ${payload.solution.rating}</span><br><span>${solutionText(payload.solution)}</span><br><a href="${escapeHtml(payload.solution.sourceUrl)}" target="_blank" rel="noreferrer">查看原题</a> <button id="next-solo" class="text-btn" type="button">下一题</button>`;
-    $("#next-solo").addEventListener("click", nextSoloQuestion);
+    if (!payload.settled) {
+      state.solo.attemptsUsed = payload.attemptsUsed;
+      $("#solo-attempts-status").textContent = `${payload.attemptsUsed} / ${state.solo.maxAttempts} 次`;
+      $("#solo-answer-form").reset();
+      renderDivisionChoices("solo", state.solo.question);
+      setSoloAnswerMode("contest");
+      toast(`未命中，剩余 ${payload.attemptsLeft} 次尝试`);
+      cooldown = payload.retryAfter;
+      return;
+    }
+    renderSoloResolution(payload, false);
   } catch (error) {
+    if (error.status === 429) cooldown = error.payload?.retryAfter || 5;
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+    if (cooldown) startSoloRetryCooldown(cooldown);
+  }
+}
+
+function startSoloRetryCooldown(seconds) {
+  clearInterval(state.solo.retryTimer);
+  const button = $("#solo-answer-form .submit-answer");
+  let remaining = Math.max(1, Number(seconds) || 5);
+  button.disabled = true;
+  button.textContent = `${remaining}s 后重试`;
+  state.solo.retryTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining <= 0 || state.solo.resolved) {
+      clearInterval(state.solo.retryTimer);
+      state.solo.retryTimer = null;
+      button.disabled = false;
+      button.textContent = "提交答案";
+      return;
+    }
+    button.textContent = `${remaining}s 后重试`;
+  }, 1000);
+}
+
+function ratingDeltaText(payload) {
+  if (!payload.rated) return "";
+  const sign = payload.ratingDelta > 0 ? "+" : "";
+  return ` · Rating ${sign}${payload.ratingDelta}`;
+}
+
+function renderSoloResolution(payload, abandoned) {
+  clearInterval(state.solo.timer);
+  clearInterval(state.solo.retryTimer);
+  state.solo.resolved = true;
+  state.solo.settling = false;
+  state.solo.attemptsUsed = payload.attemptsUsed;
+  if (state.solo.timed) $("#solo-attempts-status").textContent = `${payload.attemptsUsed} / ${state.solo.maxAttempts} 次`;
+  state.user = payload.user;
+  renderUser();
+  $("#solo-answer-form").classList.add("hidden");
+  $("#abandon-solo").classList.add("hidden");
+  const result = $("#solo-result");
+  result.className = `result-strip ${payload.correct ? "" : "wrong"}`;
+  const headings = { timeout: "倒计时结束", attempts: "尝试次数已用完", abandoned: "已放弃此题" };
+  const heading = abandoned ? "已放弃此题" : (payload.correct ? `回答正确，+${payload.points} 分` : (headings[payload.terminalReason] || "没有命中"));
+  const detail = payload.solutionWithheld
+    ? "<span>最强大脑题未命中，正确答案暂不公开。</span>"
+    : `<span>${escapeHtml(payload.solution.title)} · ${payload.solution.rating}</span><br><span>${solutionText(payload.solution)}</span><br><a href="${escapeHtml(payload.solution.sourceUrl)}" target="_blank" rel="noreferrer">查看原题</a>`;
+  result.innerHTML = `<strong>${heading}${ratingDeltaText(payload)}</strong>${detail} <button id="next-solo" class="text-btn" type="button">下一题</button>`;
+  $("#next-solo").addEventListener("click", nextSoloQuestion);
+}
+
+async function abandonSoloQuestion() {
+  if (!state.solo.question || state.solo.resolved) return;
+  const button = $("#abandon-solo");
+  state.solo.settling = true;
+  setButtonBusy(button, true, "结算中...");
+  try {
+    const payload = await api("/api/quiz/abandon", {
+      method: "POST",
+      body: { token: state.solo.question.token },
+    });
+    renderSoloResolution(payload, true);
+  } catch (error) {
+    state.solo.settling = false;
     toast(error.message, "error");
   } finally {
     setButtonBusy(button, false);
   }
+}
+
+async function timeoutSoloQuestion() {
+  if (!state.solo.question || state.solo.resolved || state.solo.settling) return;
+  state.solo.settling = true;
+  $("#solo-answer-form .submit-answer").disabled = true;
+  $("#abandon-solo").disabled = true;
+  try {
+    const payload = await api("/api/quiz/timeout", {
+      method: "POST",
+      body: { token: state.solo.question.token },
+    });
+    renderSoloResolution(payload, false);
+  } catch (error) {
+    state.solo.settling = false;
+    $("#solo-answer-form .submit-answer").disabled = false;
+    $("#abandon-solo").disabled = false;
+    toast(error.message, "error");
+  }
+}
+
+function resetSoloSession() {
+  clearInterval(state.solo.timer);
+  clearInterval(state.solo.retryTimer);
+  state.solo.question = null;
+  state.solo.resolved = true;
+  state.solo.settling = false;
+  $("#solo-game").classList.add("hidden");
+  $("#solo-setup").classList.remove("hidden");
+}
+
+async function endSoloSession() {
+  const button = $("#end-solo");
+  if (state.solo.question && !state.solo.resolved) {
+    if (!window.confirm("当前题会按放弃结算，确定结束本次吗？")) return;
+    state.solo.settling = true;
+    setButtonBusy(button, true, "结算中...");
+    try {
+      const payload = await api("/api/quiz/abandon", {
+        method: "POST",
+        body: { token: state.solo.question.token },
+      });
+      state.user = payload.user;
+      renderUser();
+      resetSoloSession();
+      toast(`本次已结束${ratingDeltaText(payload)}`);
+    } catch (error) {
+      state.solo.settling = false;
+      toast(error.message, "error");
+    } finally {
+      setButtonBusy(button, false);
+    }
+    return;
+  }
+  resetSoloSession();
+  toast("本次已结束");
 }
 
 async function loadLeaderboard() {
@@ -469,6 +775,7 @@ async function pollBattle() {
     renderBattle(payload.match);
   } catch (error) {
     if (error.status === 401) stopBattlePoll();
+    if (error.status === 403 || error.status === 404) resetBattleRoom();
     toast(error.message, "error");
   } finally {
     state.battle.polling = false;
@@ -515,8 +822,7 @@ function renderBattle(match) {
     $("#battle-answer-form").classList.add("hidden");
     const result = $("#battle-result");
     result.className = "result-strip";
-    result.innerHTML = `<strong>对战结束</strong><span>${match.winner === "draw" ? "平局" : `${escapeHtml(match.winner)} 获胜`}</span><br><button id="leave-room" class="text-btn" type="button">返回对战大厅</button>`;
-    $("#leave-room").addEventListener("click", leaveRoom);
+    result.innerHTML = `<strong>对战结束</strong><span>${match.winner === "draw" ? "平局" : `${escapeHtml(match.winner)} 获胜`}</span>`;
     refreshMe();
     return;
   }
@@ -579,11 +885,29 @@ async function submitBattleAnswer(event) {
   }
 }
 
-function leaveRoom() {
+function resetBattleRoom() {
   stopBattlePoll();
   state.battle.code = null;
+  state.battle.roundSeen = 0;
   $("#battle-room").classList.add("hidden");
   $("#battle-setup").classList.remove("hidden");
+}
+
+async function leaveRoom() {
+  const button = $("#exit-room");
+  const code = state.battle.code;
+  if (!code) return resetBattleRoom();
+  setButtonBusy(button, true, "退出中...");
+  try {
+    const payload = await api(`/api/matches/${code}/leave`, { method: "POST", body: {} });
+    resetBattleRoom();
+    toast(payload.forfeited ? "已退出，本场按弃权结算" : "已退出房间");
+  } catch (error) {
+    if (error.status === 403 || error.status === 404) resetBattleRoom();
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 async function refreshMe() {
@@ -605,14 +929,29 @@ function bindEvents() {
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
   $$("#solo-difficulty button, #battle-mode button, #battle-difficulty button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#solo-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloModeControls(); }));
+  $$("#solo-timing button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloTimingControls(); }));
   $("#solo-start").addEventListener("click", startSolo);
+  $("#abandon-solo").addEventListener("click", abandonSoloQuestion);
+  $("#end-solo").addEventListener("click", endSoloSession);
   $$('[data-answer-mode]').forEach(btn => btn.addEventListener("click", () => setSoloAnswerMode(btn.dataset.answerMode)));
   $("#solo-answer-form").addEventListener("submit", submitSoloAnswer);
   $("#refresh-board").addEventListener("click", loadLeaderboard);
   $("#submission-file").addEventListener("change", previewSubmissionFile);
+  $("#paste-screenshot").addEventListener("click", readSubmissionClipboard);
+  $("#submission-drop-zone").addEventListener("dragover", event => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    event.currentTarget.classList.add("dragging");
+  });
+  $("#submission-drop-zone").addEventListener("dragleave", event => event.currentTarget.classList.remove("dragging"));
+  $("#submission-drop-zone").addEventListener("drop", dropSubmissionImage);
+  $("#remove-submission-image").addEventListener("click", clearSubmissionImage);
+  $("#submission-form").addEventListener("paste", pasteSubmissionScreenshot);
   $("#submission-form").addEventListener("submit", submitClue);
   $("#refresh-submissions").addEventListener("click", loadMySubmissions);
   $("#refresh-reviews").addEventListener("click", loadAdminSubmissions);
+  $("#refresh-permissions").addEventListener("click", loadPermissionUsers);
   $("#create-room").addEventListener("click", createRoom);
   $("#join-room").addEventListener("click", joinRoom);
   $("#join-code").addEventListener("input", event => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); });
@@ -620,6 +959,7 @@ function bindEvents() {
     try { await navigator.clipboard.writeText(state.battle.code); toast("房间码已复制"); } catch (_) { toast("房间码复制失败", "error"); }
   });
   $("#start-battle").addEventListener("click", startBattle);
+  $("#exit-room").addEventListener("click", leaveRoom);
   $$('[data-battle-answer-mode]').forEach(btn => btn.addEventListener("click", () => setBattleAnswerMode(btn.dataset.battleAnswerMode)));
   $("#battle-answer-form").addEventListener("submit", submitBattleAnswer);
 }

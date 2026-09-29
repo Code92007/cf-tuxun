@@ -39,6 +39,12 @@ STATIC = ROOT / "static"
 SESSION_DAYS = 30
 ROUND_SECONDS = 30
 REVEAL_SECONDS = 4
+RATED_MIN_CONTEST_SPAN = 200
+RATED_MIN_YEAR_SPAN = 2
+RATED_MIN_POOL_SIZE = 8
+RATED_SOLO_SECONDS = 120
+QUIZ_RETRY_SECONDS = 5
+QUIZ_MAX_ATTEMPTS = 10
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 CONTEST_ANSWER_RE = re.compile(r"^\s*(\d{1,6})\s*[-_/ ]?\s*([A-Za-z][A-Za-z0-9]?)\s*$")
 INDEX_RE = re.compile(r"^[A-Z][A-Z0-9]?")
@@ -276,8 +282,17 @@ class Handler(BaseHTTPRequestHandler):
         session = self.require_user(csrf=csrf)
         if not session:
             return None
-        if not session["is_admin"]:
+        if not (session["is_admin"] or session["is_super_admin"]):
             self.json(403, error="需要管理员权限")
+            return None
+        return session
+
+    def require_super_admin(self, csrf=False):
+        session = self.require_user(csrf=csrf)
+        if not session:
+            return None
+        if not session["is_super_admin"]:
+            self.json(403, error="需要超级管理员权限")
             return None
         return session
 
@@ -301,6 +316,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_my_submissions()
         if path == "/api/admin/submissions":
             return self.get_admin_submissions()
+        if path == "/api/admin/users":
+            return self.get_admin_users()
         if path.startswith("/api/submissions/") and path.endswith("/image"):
             return self.get_submission_image(path)
         if path.startswith("/api/matches/") and path.endswith("/clue.svg"):
@@ -325,16 +342,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.quiz_next(payload)
         if path == "/api/quiz/answer":
             return self.quiz_answer(payload)
+        if path == "/api/quiz/abandon":
+            return self.quiz_abandon(payload)
+        if path == "/api/quiz/timeout":
+            return self.quiz_timeout(payload)
         if path == "/api/submissions":
             return self.create_submission(payload)
         if path.startswith("/api/admin/submissions/") and path.endswith("/review"):
             return self.review_submission(path, payload)
+        if path.startswith("/api/admin/users/") and path.endswith("/role"):
+            return self.change_admin_role(path, payload)
         if path == "/api/matches":
             return self.create_match(payload)
         if path == "/api/matches/join":
             return self.join_match(payload)
         if path.startswith("/api/matches/") and path.endswith("/start"):
             return self.start_match(path, payload)
+        if path.startswith("/api/matches/") and path.endswith("/leave"):
+            return self.leave_match(path, payload)
         if path.startswith("/api/matches/") and path.endswith("/answer"):
             return self.answer_match(path, payload)
         return self.json(404, error="接口不存在")
@@ -542,6 +567,47 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchall()
         return self.json(submissions=[self.submission_public(row) for row in rows])
 
+    def get_admin_users(self):
+        session = self.require_super_admin()
+        if not session:
+            return
+        rows = get_db().execute(
+            """
+            SELECT * FROM users
+            ORDER BY is_super_admin DESC,is_admin DESC,username COLLATE NOCASE ASC LIMIT 500
+            """
+        ).fetchall()
+        return self.json(users=[{
+            "id": row["id"],
+            "username": row["username"],
+            "isAdmin": bool(row["is_admin"] or row["is_super_admin"]),
+            "isSuperAdmin": bool(row["is_super_admin"]),
+            "createdAt": row["created_at"],
+        } for row in rows])
+
+    def change_admin_role(self, path, payload):
+        session = self.require_super_admin(csrf=True)
+        if not session:
+            return
+        try:
+            user_id = int(path.rstrip("/").split("/")[-2])
+        except ValueError:
+            return self.json(404, error="用户不存在")
+        db = get_db()
+        target = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not target:
+            return self.json(404, error="用户不存在")
+        if target["is_super_admin"]:
+            return self.json(400, error="不能在网页中修改超级管理员权限")
+        is_admin = int(bool(payload.get("isAdmin")))
+        db.execute("UPDATE users SET is_admin=? WHERE id=?", (is_admin, user_id))
+        return self.json(ok=True, user={
+            "id": target["id"],
+            "username": target["username"],
+            "isAdmin": bool(is_admin),
+            "isSuperAdmin": False,
+        })
+
     def get_submission_image(self, path):
         session = self.require_user()
         if not session:
@@ -551,7 +617,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.send_error(404)
         row = get_db().execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
-        if not row or not row["image_path"] or (row["user_id"] != session["id"] and not session["is_admin"]):
+        if not row or not row["image_path"] or (row["user_id"] != session["id"] and not (session["is_admin"] or session["is_super_admin"])):
             return self.send_error(404)
         return self.send_image_path(row["image_path"])
 
@@ -663,9 +729,38 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             return
         filters = parse_filters(payload.get("filters"))
-        candidates = matching_question_ids(filters, 50)
+        rated = bool(payload.get("rated"))
+        timed = rated or bool(payload.get("timed"))
+        try:
+            requested_time_limit = int(payload.get("timeLimit", RATED_SOLO_SECONDS))
+        except (TypeError, ValueError):
+            requested_time_limit = RATED_SOLO_SECONDS
+        time_limit = RATED_SOLO_SECONDS if rated else min(600, max(30, requested_time_limit)) if timed else 0
+        max_attempts = QUIZ_MAX_ATTEMPTS if timed else 1
+        if rated:
+            filters["difficulty"] = "all"
+        candidates = matching_question_ids(filters, 5000)
         if not candidates:
             return self.json(404, error="这个筛选范围暂时没有题目，请放宽条件")
+        if rated:
+            ranges = get_db().execute(
+                """
+                SELECT MIN(a.contest_id) contest_min, MAX(a.contest_id) contest_max,
+                    MIN(CAST(strftime('%Y',q.contest_time,'unixepoch') AS INTEGER)) year_min,
+                    MAX(CAST(strftime('%Y',q.contest_time,'unixepoch') AS INTEGER)) year_max
+                FROM aliases a JOIN questions q ON q.id=a.question_id WHERE q.active=1
+                """
+            ).fetchone()
+            contest_min = filters["contestMin"] if filters["contestMin"] is not None else ranges["contest_min"]
+            contest_max = filters["contestMax"] if filters["contestMax"] is not None else ranges["contest_max"]
+            year_min = filters["yearMin"] if filters["yearMin"] is not None else ranges["year_min"]
+            year_max = filters["yearMax"] if filters["yearMax"] is not None else ranges["year_max"]
+            if contest_max - contest_min < RATED_MIN_CONTEST_SPAN:
+                return self.json(400, error=f"Rating 模式的 Contest ID 范围至少需要跨度 {RATED_MIN_CONTEST_SPAN}")
+            if year_max - year_min < RATED_MIN_YEAR_SPAN:
+                return self.json(400, error="Rating 模式的时间范围至少需要覆盖 3 个自然年")
+            if len(candidates) < RATED_MIN_POOL_SIZE:
+                return self.json(400, error=f"Rating 模式筛选后至少需要 {RATED_MIN_POOL_SIZE} 道题")
         recent = {
             row["question_id"] for row in get_db().execute(
                 "SELECT question_id FROM attempts WHERE user_id=? ORDER BY id DESC LIMIT 6", (session["id"],)
@@ -674,14 +769,24 @@ class Handler(BaseHTTPRequestHandler):
         fresh = [qid for qid in candidates if qid not in recent]
         qid = random.choice(fresh or candidates)
         token = secrets.token_urlsafe(24)
-        difficulty = filters["difficulty"] if filters["difficulty"] != "all" else "medium"
+        difficulty = filters["difficulty"]
         db = get_db()
         db.execute(
-            "INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,started_at) VALUES(?,?,?,?,?)",
-            (token, session["id"], qid, difficulty, now()),
+            """
+            INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,rated,time_limit,max_attempts,started_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (token, session["id"], qid, difficulty, int(rated), time_limit, max_attempts, now()),
         )
         question = db.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
-        return self.json(question=question_public(question, token, difficulty))
+        public_question = question_public(question, token, difficulty)
+        public_question.update({
+            "timed": bool(time_limit),
+            "timeLimit": time_limit,
+            "maxAttempts": max_attempts,
+            "retrySeconds": QUIZ_RETRY_SECONDS,
+        })
+        return self.json(question=public_question, rated=rated)
 
     def get_clue(self, path):
         session = self.require_user()
@@ -714,44 +819,131 @@ class Handler(BaseHTTPRequestHandler):
         if round_row["answered_at"] is not None:
             return self.json(409, error="这道题已经作答")
         question = db.execute("SELECT * FROM questions WHERE id=?", (round_row["question_id"],)).fetchone()
+        elapsed = now() - round_row["started_at"]
+        if round_row["time_limit"] and elapsed >= round_row["time_limit"]:
+            elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
+            return self.finish_quiz_round(session, round_row, question, "超时", False, elapsed_ms, reason="timeout")
+        if round_row["last_attempt_at"]:
+            retry_after = QUIZ_RETRY_SECONDS - (now() - round_row["last_attempt_at"])
+            if retry_after > 0:
+                return self.json(429, error="两次尝试至少间隔 5 秒", retryAfter=max(1, int(retry_after + 0.999)))
         correct, shown, error = check_answer(question["id"], payload)
         if error:
             return self.json(400, error=error)
         elapsed_ms = min(180_000, max(0, int((now() - round_row["started_at"]) * 1000)))
-        streak = session["streak"] + 1 if correct else 0
+        next_attempt_count = round_row["attempt_count"] + 1
+        if not correct and round_row["time_limit"] and next_attempt_count < round_row["max_attempts"]:
+            db.execute(
+                """
+                UPDATE quiz_rounds SET attempt_count=attempt_count+1,last_attempt_at=?
+                WHERE token=? AND answered_at IS NULL
+                """,
+                (now(), round_row["token"]),
+            )
+            seconds_left = max(0, int(round_row["time_limit"] - (now() - round_row["started_at"])))
+            return self.json(
+                correct=False,
+                settled=False,
+                attemptsUsed=next_attempt_count,
+                attemptsLeft=round_row["max_attempts"] - next_attempt_count,
+                retryAfter=QUIZ_RETRY_SECONDS,
+                secondsLeft=seconds_left,
+            )
+        reason = "attempts" if not correct and round_row["time_limit"] else "answered"
+        return self.finish_quiz_round(session, round_row, question, shown, correct, elapsed_ms, count_attempt=True, reason=reason)
+
+    def quiz_abandon(self, payload):
+        session = self.require_user(csrf=True)
+        if not session:
+            return
+        token = str(payload.get("token", ""))
+        db = get_db()
+        round_row = db.execute(
+            "SELECT * FROM quiz_rounds WHERE token=? AND user_id=?", (token, session["id"])
+        ).fetchone()
+        if not round_row:
+            return self.json(404, error="这道题已失效，请换一题")
+        if round_row["answered_at"] is not None:
+            return self.json(409, error="这道题已经结算")
+        question = db.execute("SELECT * FROM questions WHERE id=?", (round_row["question_id"],)).fetchone()
+        elapsed_ms = min(180_000, max(0, int((now() - round_row["started_at"]) * 1000)))
+        return self.finish_quiz_round(session, round_row, question, "放弃", False, elapsed_ms, reason="abandoned")
+
+    def quiz_timeout(self, payload):
+        session = self.require_user(csrf=True)
+        if not session:
+            return
+        token = str(payload.get("token", ""))
+        db = get_db()
+        round_row = db.execute(
+            "SELECT * FROM quiz_rounds WHERE token=? AND user_id=?", (token, session["id"])
+        ).fetchone()
+        if not round_row:
+            return self.json(404, error="这道题已失效，请换一题")
+        if round_row["answered_at"] is not None:
+            return self.json(409, error="这道题已经结算")
+        if not round_row["time_limit"]:
+            return self.json(409, error="这道题没有倒计时")
+        elapsed = now() - round_row["started_at"]
+        if elapsed < round_row["time_limit"]:
+            return self.json(409, error="倒计时尚未结束", secondsLeft=max(1, int(round_row["time_limit"] - elapsed)))
+        question = db.execute("SELECT * FROM questions WHERE id=?", (round_row["question_id"],)).fetchone()
+        elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
+        return self.finish_quiz_round(session, round_row, question, "超时", False, elapsed_ms, reason="timeout")
+
+    def finish_quiz_round(self, session, round_row, question, shown, correct, elapsed_ms, count_attempt=False, reason="answered"):
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE id=?", (session["id"],)).fetchone()
+        streak = user["streak"] + 1 if correct else 0
         multiplier = {"easy": 0.8, "medium": 1.0, "hard": 1.2, "brain": 1.5}.get(round_row["difficulty"], 1.0)
         base = max(150, 1000 - elapsed_ms // 45)
         points = int((base + min(streak, 10) * 30) * multiplier) if correct else 0
+        rating_delta = 0
+        if round_row["rated"]:
+            expected = 1 / (1 + 10 ** ((question["rating"] - user["rating"]) / 400))
+            raw_delta = round(24 * ((1 if correct else 0) - expected))
+            proposed = max(1, raw_delta) if correct else min(-1, raw_delta)
+            rating_delta = max(0, user["rating"] + proposed) - user["rating"]
         db.execute("BEGIN IMMEDIATE")
         try:
             changed = db.execute(
-                "UPDATE quiz_rounds SET answered_at=?,answer=?,correct=?,points=? WHERE token=? AND answered_at IS NULL",
-                (now(), shown, int(correct), points, token),
+                """
+                UPDATE quiz_rounds SET answered_at=?,answer=?,correct=?,points=?,
+                    attempt_count=attempt_count+? WHERE token=? AND answered_at IS NULL
+                """,
+                (now(), shown, int(correct), points, int(count_attempt), round_row["token"]),
             ).rowcount
             if not changed:
                 db.execute("ROLLBACK")
                 return self.json(409, error="这道题已经作答")
             db.execute(
                 "INSERT INTO attempts(user_id,question_id,mode,answer,correct,elapsed_ms,points,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (session["id"], question["id"], "solo", shown, int(correct), elapsed_ms, points, int(now())),
+                (session["id"], question["id"], "solo-rated" if round_row["rated"] else "solo", shown, int(correct), elapsed_ms, points, int(now())),
             )
             db.execute(
                 """
-                UPDATE users SET total_score=total_score+?, attempts=attempts+1,
+                UPDATE users SET total_score=total_score+?, rating=rating+?, attempts=attempts+1,
                     correct=correct+?, streak=?, best_streak=MAX(best_streak,?) WHERE id=?
                 """,
-                (points, int(correct), streak, streak, session["id"]),
+                (points, rating_delta, int(correct), streak, streak, session["id"]),
             )
             db.execute("COMMIT")
         except Exception:
             db.execute("ROLLBACK")
             raise
         user = db.execute("SELECT * FROM users WHERE id=?", (session["id"],)).fetchone()
+        solution_withheld = round_row["difficulty"] == "brain" and not correct
         return self.json(
             correct=correct,
             points=points,
+            rated=bool(round_row["rated"]),
+            ratingDelta=rating_delta,
+            settled=True,
+            terminalReason=reason,
+            attemptsUsed=round_row["attempt_count"] + int(count_attempt),
             elapsedMs=elapsed_ms,
-            solution=solution_for(question),
+            solution=None if solution_withheld else solution_for(question),
+            solutionWithheld=solution_withheld,
             user=public_user(user),
         )
 
@@ -831,6 +1023,45 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (dump_json(selected), len(selected), now(), match["id"]),
         )
+        return self.json(ok=True)
+
+    def leave_match(self, path, payload):
+        session = self.require_user(csrf=True)
+        if not session:
+            return
+        match = self.match_from_path(path, "/leave")
+        if not match:
+            return self.json(404, error="房间不存在")
+        if not self.participant(match, session["id"]):
+            return self.json(403, error="你不在这个房间中")
+
+        db = get_db()
+        if match["status"] == "waiting":
+            if match["host_id"] == session["id"]:
+                db.execute("DELETE FROM matches WHERE id=? AND status='waiting'", (match["id"],))
+                return self.json(ok=True, roomClosed=True)
+            db.execute(
+                "UPDATE matches SET guest_id=NULL WHERE id=? AND status='waiting' AND guest_id=?",
+                (match["id"], session["id"]),
+            )
+            return self.json(ok=True, roomClosed=False)
+
+        if match["status"] == "active":
+            if match["host_id"] == session["id"]:
+                db.execute(
+                    "UPDATE matches SET guest_score=MAX(guest_score,host_score+1),status='finished',phase='finished' "
+                    "WHERE id=? AND status='active'",
+                    (match["id"],),
+                )
+            else:
+                db.execute(
+                    "UPDATE matches SET host_score=MAX(host_score,guest_score+1),status='finished',phase='finished' "
+                    "WHERE id=? AND status='active'",
+                    (match["id"],),
+                )
+            self.apply_match_result(match["id"])
+            return self.json(ok=True, forfeited=True)
+
         return self.json(ok=True)
 
     def advance_match(self, match):

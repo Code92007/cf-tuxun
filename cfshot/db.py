@@ -45,6 +45,7 @@ def init_db():
             games INTEGER NOT NULL DEFAULT 0,
             wins INTEGER NOT NULL DEFAULT 0,
             is_admin INTEGER NOT NULL DEFAULT 0,
+            is_super_admin INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sessions (
@@ -82,6 +83,11 @@ def init_db():
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             question_id INTEGER NOT NULL REFERENCES questions(id),
             difficulty TEXT NOT NULL,
+            rated INTEGER NOT NULL DEFAULT 0,
+            time_limit INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 1,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at REAL,
             started_at REAL NOT NULL,
             answered_at REAL,
             answer TEXT,
@@ -153,10 +159,16 @@ def init_db():
         """
     )
     _ensure_column(db, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "users", "is_super_admin", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "questions", "clue_kind", "TEXT NOT NULL DEFAULT 'statement'")
     _ensure_column(db, "questions", "image_path", "TEXT")
     _ensure_column(db, "questions", "brain", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "submissions", "clue_text", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(db, "quiz_rounds", "rated", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "quiz_rounds", "time_limit", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "quiz_rounds", "max_attempts", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(db, "quiz_rounds", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "quiz_rounds", "last_attempt_at", "REAL")
     _migrate_aliases(db)
     seed_questions(db)
     db.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
@@ -224,7 +236,8 @@ def public_user(row):
         "bestStreak": row["best_streak"],
         "games": row["games"],
         "wins": row["wins"],
-        "isAdmin": bool(row["is_admin"]),
+        "isAdmin": bool(row["is_admin"] or row["is_super_admin"]),
+        "isSuperAdmin": bool(row["is_super_admin"]),
     }
 
 

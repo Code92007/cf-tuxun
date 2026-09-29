@@ -12,12 +12,14 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy
 ```
 
-首次部署后，把自己的站内用户名设为管理员：
+首次部署后，把自己的站内用户名设为超级管理员：
 
 ```bash
 cd /root/cf-tuxun
-docker compose exec app python scripts/make_admin.py 站内用户名
+docker compose exec app python scripts/make_admin.py 站内用户名 --super
 ```
+
+之后由超级管理员在站内“权限管理”页面任免普通审核管理员；普通管理员只能审核投稿。
 
 以后更新时执行：
 

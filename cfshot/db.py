@@ -66,6 +66,8 @@ def init_db():
             clue_kind TEXT NOT NULL DEFAULT 'statement',
             image_path TEXT,
             brain INTEGER NOT NULL DEFAULT 0,
+            open_mode INTEGER NOT NULL DEFAULT 0,
+            verification_text TEXT NOT NULL DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1,
             unique_checked INTEGER NOT NULL DEFAULT 1
         );
@@ -105,6 +107,16 @@ def init_db():
             points INTEGER NOT NULL,
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS question_exposures (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            outcome TEXT NOT NULL DEFAULT 'seen',
+            seen_at REAL NOT NULL,
+            UNIQUE(user_id, source, source_key)
+        );
         CREATE TABLE IF NOT EXISTS matches (
             id INTEGER PRIMARY KEY,
             code TEXT NOT NULL UNIQUE,
@@ -120,6 +132,14 @@ def init_db():
             host_score INTEGER NOT NULL DEFAULT 0,
             guest_score INTEGER NOT NULL DEFAULT 0,
             phase_started_at REAL,
+            round_deadline REAL,
+            round_seconds INTEGER NOT NULL DEFAULT 30,
+            abandon_seconds INTEGER NOT NULL DEFAULT 20,
+            penalty_enabled INTEGER NOT NULL DEFAULT 1,
+            penalty_first INTEGER NOT NULL DEFAULT 3,
+            penalty_second INTEGER NOT NULL DEFAULT 5,
+            penalty_repeat INTEGER NOT NULL DEFAULT 10,
+            scoring_mode TEXT NOT NULL DEFAULT 'classic',
             rated_applied INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
@@ -133,6 +153,12 @@ def init_db():
             elapsed_ms INTEGER NOT NULL,
             points INTEGER NOT NULL,
             created_at REAL NOT NULL,
+            settled INTEGER NOT NULL DEFAULT 1,
+            abandoned INTEGER NOT NULL DEFAULT 0,
+            pending_review INTEGER NOT NULL DEFAULT 0,
+            distance REAL,
+            attempt_count INTEGER NOT NULL DEFAULT 1,
+            cooldown_until REAL,
             UNIQUE(match_id, round_index, user_id)
         );
         CREATE TABLE IF NOT EXISTS submissions (
@@ -145,6 +171,9 @@ def init_db():
             clue_text TEXT NOT NULL DEFAULT '',
             note TEXT NOT NULL DEFAULT '',
             suggested_brain INTEGER NOT NULL DEFAULT 0,
+            suggested_open INTEGER NOT NULL DEFAULT 0,
+            accepted_answers TEXT NOT NULL DEFAULT '',
+            verification_text TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'pending',
             reviewer_id INTEGER REFERENCES users(id),
             review_note TEXT NOT NULL DEFAULT '',
@@ -152,10 +181,59 @@ def init_db():
             question_id INTEGER REFERENCES questions(id),
             created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS open_answer_candidates (
+            id INTEGER PRIMARY KEY,
+            question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+            requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            contest_id INTEGER NOT NULL,
+            problem_index TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            similarity REAL NOT NULL DEFAULT 0,
+            hit_count INTEGER NOT NULL DEFAULT 1,
+            reviewer_id INTEGER REFERENCES users(id),
+            review_note TEXT NOT NULL DEFAULT '',
+            reviewed_at INTEGER,
+            created_at INTEGER NOT NULL,
+            UNIQUE(question_id, contest_id, problem_index)
+        );
+        CREATE TABLE IF NOT EXISTS daily_questions (
+            day TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            question_id INTEGER NOT NULL REFERENCES questions(id),
+            PRIMARY KEY(day, position),
+            UNIQUE(day, question_id)
+        );
+        CREATE TABLE IF NOT EXISTS daily_runs (
+            day TEXT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            current_index INTEGER NOT NULL DEFAULT 0,
+            question_started_at REAL,
+            total_score INTEGER NOT NULL DEFAULT 0,
+            finished_at REAL,
+            PRIMARY KEY(day, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS daily_answers (
+            day TEXT NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            question_id INTEGER NOT NULL REFERENCES questions(id),
+            answer TEXT NOT NULL,
+            contest_id INTEGER,
+            problem_index TEXT,
+            distance REAL,
+            score INTEGER NOT NULL DEFAULT 0,
+            elapsed_ms INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(day, user_id, position)
+        );
         CREATE INDEX IF NOT EXISTS idx_alias_question ON aliases(question_id);
         CREATE INDEX IF NOT EXISTS idx_attempt_user ON attempts(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_exposure_user ON question_exposures(user_id, seen_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_exposure_question ON question_exposures(question_id, seen_at DESC);
         CREATE INDEX IF NOT EXISTS idx_match_code ON matches(code);
         CREATE INDEX IF NOT EXISTS idx_submission_status ON submissions(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_open_candidate_status ON open_answer_candidates(status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_daily_runs_board ON daily_runs(day, finished_at, total_score DESC);
         """
     )
     _ensure_column(db, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
@@ -163,15 +241,68 @@ def init_db():
     _ensure_column(db, "questions", "clue_kind", "TEXT NOT NULL DEFAULT 'statement'")
     _ensure_column(db, "questions", "image_path", "TEXT")
     _ensure_column(db, "questions", "brain", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "questions", "open_mode", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "questions", "verification_text", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(db, "submissions", "clue_text", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(db, "submissions", "suggested_open", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "submissions", "accepted_answers", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(db, "submissions", "verification_text", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(db, "quiz_rounds", "rated", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "quiz_rounds", "time_limit", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "quiz_rounds", "max_attempts", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(db, "quiz_rounds", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "quiz_rounds", "last_attempt_at", "REAL")
+    _ensure_column(db, "matches", "round_deadline", "REAL")
+    _ensure_column(db, "matches", "round_seconds", "INTEGER NOT NULL DEFAULT 30")
+    _ensure_column(db, "matches", "abandon_seconds", "INTEGER NOT NULL DEFAULT 20")
+    _ensure_column(db, "matches", "penalty_enabled", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(db, "matches", "penalty_first", "INTEGER NOT NULL DEFAULT 3")
+    _ensure_column(db, "matches", "penalty_second", "INTEGER NOT NULL DEFAULT 5")
+    _ensure_column(db, "matches", "penalty_repeat", "INTEGER NOT NULL DEFAULT 10")
+    _ensure_column(db, "matches", "scoring_mode", "TEXT NOT NULL DEFAULT 'classic'")
+    _ensure_column(db, "match_answers", "settled", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(db, "match_answers", "abandoned", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "match_answers", "pending_review", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "match_answers", "distance", "REAL")
+    _ensure_column(db, "match_answers", "attempt_count", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(db, "match_answers", "cooldown_until", "REAL")
     _migrate_aliases(db)
     seed_questions(db)
+    _backfill_question_exposures(db)
     db.execute("DELETE FROM sessions WHERE expires_at < ?", (int(time.time()),))
+
+
+def _backfill_question_exposures(db):
+    db.execute(
+        """
+        INSERT OR IGNORE INTO question_exposures(user_id,question_id,source,source_key,outcome,seen_at)
+        SELECT user_id,question_id,'solo-attempt',CAST(id AS TEXT),
+            CASE WHEN correct=1 THEN 'correct' ELSE 'incorrect' END,created_at
+        FROM attempts
+        """
+    )
+    rows = db.execute(
+        """
+        SELECT ma.user_id,ma.match_id,ma.round_index,ma.correct,ma.abandoned,ma.pending_review,ma.created_at,
+            m.question_ids_json
+        FROM match_answers ma JOIN matches m ON m.id=ma.match_id
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            question_ids = json.loads(row["question_ids_json"])
+            question_id = question_ids[row["round_index"]]
+        except (IndexError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        outcome = "correct" if row["correct"] else "abandoned" if row["abandoned"] else "pending" if row["pending_review"] else "incorrect"
+        db.execute(
+            """
+            INSERT OR IGNORE INTO question_exposures(
+                user_id,question_id,source,source_key,outcome,seen_at
+            ) VALUES(?,?, 'battle', ?, ?, ?)
+            """,
+            (row["user_id"], question_id, f'{row["match_id"]}:{row["round_index"]}', outcome, row["created_at"]),
+        )
 
 
 def seed_questions(db=None):
@@ -181,18 +312,22 @@ def seed_questions(db=None):
         for item in SEED_QUESTIONS:
             db.execute(
                 """
-                INSERT INTO questions(canonical_key, title, clue, rating, contest_time, round_type, source_url, clue_kind, image_path, brain)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO questions(
+                    canonical_key,title,clue,rating,contest_time,round_type,source_url,
+                    clue_kind,image_path,brain,open_mode,verification_text
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(canonical_key) DO UPDATE SET
                     title=excluded.title, clue=excluded.clue, rating=excluded.rating,
                     contest_time=excluded.contest_time, round_type=excluded.round_type,
                     source_url=excluded.source_url, clue_kind=excluded.clue_kind,
-                    image_path=excluded.image_path, brain=excluded.brain
+                    image_path=excluded.image_path, brain=excluded.brain,
+                    open_mode=excluded.open_mode,verification_text=excluded.verification_text
                 """,
                 (
                     item["key"], item["title"], item["clue"], item["rating"],
                     item["contest_time"], item["round_type"], item["source_url"],
                     item.get("clue_kind", "statement"), item.get("image_path"), item.get("brain", 0),
+                    item.get("open_mode", 0), item.get("verification_text", ""),
                 ),
             )
             qid = db.execute("SELECT id FROM questions WHERE canonical_key=?", (item["key"],)).fetchone()["id"]
@@ -246,13 +381,14 @@ def parse_filters(raw):
     difficulty = raw.get("difficulty", "medium")
     if difficulty not in {"easy", "medium", "hard", "all", "brain"}:
         difficulty = "medium"
+    allowed_round_types = {"Div. 1", "Div. 2", "Div. 3", "Div. 4", "Div. 1 + Div. 2", "Edu"}
     return {
         "difficulty": difficulty,
         "contestMin": _int_or_none(raw.get("contestMin")),
         "contestMax": _int_or_none(raw.get("contestMax")),
         "yearMin": _int_or_none(raw.get("yearMin")),
         "yearMax": _int_or_none(raw.get("yearMax")),
-        "roundTypes": [x for x in raw.get("roundTypes", []) if x in {"Div. 1", "Div. 2", "Div. 3", "Edu"}],
+        "roundTypes": [x for x in raw.get("roundTypes", []) if x in allowed_round_types],
     }
 
 
@@ -290,9 +426,14 @@ def matching_question_ids(filters, limit=100):
         where.append("CAST(strftime('%Y', q.contest_time, 'unixepoch') AS INTEGER) <= ?")
         params.append(filters["yearMax"])
     if filters["roundTypes"]:
-        markers = " OR ".join("q.round_type LIKE ?" for _ in filters["roundTypes"])
-        where.append(f"({markers})")
-        params.extend(f"%{x}%" for x in filters["roundTypes"])
+        round_clauses = []
+        for round_type in filters["roundTypes"]:
+            if round_type == "Div. 1 + Div. 2":
+                round_clauses.append("q.round_type IN ('Div. 1 + Div. 2','Div. 1 / Div. 2')")
+            else:
+                round_clauses.append("q.round_type=?")
+                params.append(round_type)
+        where.append(f"({' OR '.join(round_clauses)})")
     sql = f"SELECT q.id FROM questions q WHERE {' AND '.join(where)} ORDER BY RANDOM() LIMIT ?"
     params.append(limit)
     return [row["id"] for row in get_db().execute(sql, params)]

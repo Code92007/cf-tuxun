@@ -4,7 +4,8 @@ const state = {
   authMode: "login",
   view: "dashboard",
   solo: { filters: null, question: null, answerMode: "contest", rated: false, resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, startedAt: 0, timer: null, retryTimer: null },
-  battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0 },
+  daily: { challenge: null, timer: null, startedAt: 0, secondsLeft: 0, settling: false },
+  battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0, current: null },
   uploadData: "",
 };
 
@@ -98,6 +99,7 @@ function showAuthenticated(authenticated) {
 const viewMeta = {
   dashboard: ["OVERVIEW", "今天也来认几道题"],
   solo: ["SOLO QUIZ", "单人图寻"],
+  daily: ["DAILY FIVE", "每日挑战"],
   battle: ["VERSUS", "双人对战"],
   submit: ["CONTRIBUTE", "投稿线索"],
   admin: ["MODERATION", "审核投稿"],
@@ -113,11 +115,14 @@ function showView(name) {
   $("#page-title").textContent = viewMeta[name][1];
   $(".sidebar").classList.remove("open");
   if (name === "leaderboard") loadLeaderboard();
+  if (name === "daily") loadDaily();
   if (name === "submit") loadMySubmissions();
   if (name === "admin") loadAdminSubmissions();
+  if (name === "admin") loadOpenCandidates();
   if (name === "permissions") loadPermissionUsers();
   if (name !== "battle" && state.battle.poll) stopBattlePoll();
   if (name === "battle" && state.battle.code) startBattlePoll();
+  if (name !== "daily") stopDailyTimer();
 }
 
 function setAuthMode(mode) {
@@ -229,7 +234,7 @@ async function nextSoloQuestion() {
     $("#abandon-solo").disabled = false;
     $("#solo-answer-form .submit-answer").disabled = false;
     $("#solo-answer-form .submit-answer").textContent = "提交答案";
-    $("#solo-mode-status").textContent = state.solo.rated ? "Rating 模式" : "娱乐模式";
+    $("#solo-mode-status").textContent = `${state.solo.rated ? "Rating 模式" : "娱乐模式"}${payload.question.openMode ? " · 开放题" : ""}`;
     $("#solo-attempts-status").classList.toggle("hidden", !state.solo.timed);
     $("#solo-attempts-status").textContent = `0 / ${state.solo.maxAttempts} 次`;
     $("#solo-timer-label").textContent = state.solo.timed ? "剩余" : "用时";
@@ -292,7 +297,7 @@ function answerPayload(prefix, mode) {
 }
 
 function solutionText(solution) {
-  return solution.answers.map(a => `${escapeHtml(a.contest)} / ${escapeHtml(a.round)}`).join("<br>");
+  return solution.answers.map(a => a.round ? `${escapeHtml(a.contest)} / ${escapeHtml(a.round)}` : escapeHtml(a.contest)).join("<br>");
 }
 
 function statusText(status) {
@@ -303,7 +308,7 @@ function submissionItem(item) {
   const media = item.imageUrl
     ? `<div class="submission-thumb"><img src="${escapeHtml(item.imageUrl)}" alt="投稿裁图"></div>`
     : `<div class="submission-thumb">TEXT</div>`;
-  return `<article class="submission-item ${escapeHtml(item.status)}">${media}<div class="submission-copy"><strong>${escapeHtml(item.answer)}</strong><span class="status-label">${statusText(item.status)}</span>${item.textClue ? `<p>${escapeHtml(item.textClue)}</p>` : ""}${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.reviewNote ? `<p>审核：${escapeHtml(item.reviewNote)}</p>` : ""}</div></article>`;
+  return `<article class="submission-item ${escapeHtml(item.status)}">${media}<div class="submission-copy"><strong>${escapeHtml(item.answer)}</strong><span class="status-label">${statusText(item.status)}${item.suggestedOpen ? " · 开放题" : ""}</span>${item.acceptedAnswers ? `<p>其他答案：${escapeHtml(item.acceptedAnswers)}</p>` : ""}${item.textClue ? `<p>${escapeHtml(item.textClue)}</p>` : ""}${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}${item.reviewNote ? `<p>审核：${escapeHtml(item.reviewNote)}</p>` : ""}</div></article>`;
 }
 
 async function loadMySubmissions() {
@@ -322,6 +327,10 @@ function clearSubmissionImage() {
   $("#submission-file").value = "";
   $("#submission-preview").removeAttribute("src");
   $("#submission-preview-wrap").classList.add("hidden");
+}
+
+function updateSubmissionOpenControls() {
+  $("#submission-open-details").classList.toggle("hidden", !$("#submission-open").checked);
 }
 
 function blobToDataUrl(blob) {
@@ -435,10 +444,14 @@ async function submitClue(event) {
         textClue: $("#submission-text").value,
         note: $("#submission-note").value,
         suggestedBrain: $("#submission-brain").checked,
+        suggestedOpen: $("#submission-open").checked,
+        acceptedAnswers: $("#submission-accepted-answers").value,
+        verificationText: $("#submission-verification-text").value,
       },
     });
     toast("投稿已进入审核队列");
     $("#submission-form").reset();
+    updateSubmissionOpenControls();
     clearSubmissionImage();
     selectSegment($("#submission-kind"), $("#submission-kind button[data-value='image']"));
     loadMySubmissions();
@@ -454,7 +467,7 @@ function reviewItem(item) {
     ? `<div class="review-media"><img src="${escapeHtml(item.imageUrl)}" alt="待审核裁图"></div>`
     : `<div class="review-media"><p>${escapeHtml(item.textClue || "无图片")}</p></div>`;
   const today = new Date().toISOString().slice(0, 10);
-  return `<article class="review-item" data-review-id="${item.id}">${media}<form class="review-form"><div class="full submission-copy"><strong>${escapeHtml(item.answer)} · ${escapeHtml(item.username)}</strong><span>${escapeHtml(item.clueKind)}${item.suggestedBrain ? " · 建议最强大脑" : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</div><label>题名<input name="title" required></label><label>Rating<input name="rating" type="number" min="800" max="4000" step="100" required></label><label>Round<input name="roundNumber" type="number" min="1" required></label><label>组别<select name="division"><option>Div. 1</option><option selected>Div. 2</option><option>Div. 3</option><option>Edu</option><option>Div. 1 + Div. 2</option></select></label><label>比赛日期<input name="contestDate" type="date" value="${today}" required></label><label class="check-line"><input name="brain" type="checkbox" ${item.suggestedBrain ? "checked" : ""}> 最强大脑</label><label class="full">审核备注<textarea name="reviewNote" rows="2"></textarea></label><div class="review-actions"><button class="danger-btn reject-review" type="button">不通过</button><button class="primary approve-review" type="submit">通过并入库</button></div></form></article>`;
+  return `<article class="review-item" data-review-id="${item.id}">${media}<form class="review-form"><div class="full submission-copy"><strong>${escapeHtml(item.answer)} · ${escapeHtml(item.username)}</strong><span>${escapeHtml(item.clueKind)}${item.suggestedBrain ? " · 建议最强大脑" : ""}${item.suggestedOpen ? " · 建议开放题" : ""}</span>${item.note ? `<p>${escapeHtml(item.note)}</p>` : ""}</div><label>题名<input name="title" required></label><label>Rating<input name="rating" type="number" min="800" max="4000" step="100" required></label><label>Round<input name="roundNumber" type="number" min="1" required></label><label>组别<select name="division"><option>Div. 1</option><option selected>Div. 2</option><option>Div. 3</option><option>Div. 4</option><option>Edu</option><option>Div. 1 + Div. 2</option></select></label><label>比赛日期<input name="contestDate" type="date" value="${today}" required></label><label class="check-line"><input name="brain" type="checkbox" ${item.suggestedBrain ? "checked" : ""}> 最强大脑</label><label class="check-line"><input name="openMode" type="checkbox" ${item.suggestedOpen ? "checked" : ""}> 开放题</label><label class="full">其他可接受题号<input name="acceptedAnswers" value="${escapeHtml(item.acceptedAnswers || "")}" placeholder="123A, 456B"></label><label class="full">自动核验用题面原文<textarea name="verificationText" rows="3">${escapeHtml(item.verificationText || "")}</textarea></label><label class="full">审核备注<textarea name="reviewNote" rows="2"></textarea></label><div class="review-actions"><button class="danger-btn reject-review" type="button">不通过</button><button class="primary approve-review" type="submit">通过并入库</button></div></form></article>`;
 }
 
 async function loadAdminSubmissions() {
@@ -475,6 +488,45 @@ async function loadAdminSubmissions() {
     });
   } catch (error) {
     container.innerHTML = `<p class="empty-state">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function openCandidateItem(item) {
+  return `<article class="review-item candidate-item" data-candidate-id="${item.id}"><div class="submission-copy"><strong>${escapeHtml(item.answer)} → ${escapeHtml(item.questionTitle)}</strong><span>${escapeHtml(item.questionKey)} · ${escapeHtml(item.username)} · 被提交 ${item.hitCount} 次</span><p>自动匹配度 ${(item.similarity * 100).toFixed(1)}%</p></div><form class="candidate-actions"><label>Round（可选）<input name="roundNumber" type="number" min="0" value="0"></label><label>组别<select name="division"><option selected>Open</option><option>Div. 1</option><option>Div. 2</option><option>Div. 3</option><option>Div. 4</option><option>Edu</option><option>Div. 1 + Div. 2</option></select></label><button class="danger-btn reject-candidate" type="button">驳回</button><button class="primary approve-candidate" type="submit">加入答案</button></form></article>`;
+}
+
+async function loadOpenCandidates() {
+  const container = $("#open-candidate-list");
+  if (!state.user?.isAdmin) return;
+  container.innerHTML = '<p class="empty-state">加载中...</p>';
+  try {
+    const payload = await api("/api/admin/open-candidates");
+    const pending = payload.candidates.filter(item => item.status === "pending");
+    container.innerHTML = pending.length ? pending.map(openCandidateItem).join("") : '<p class="empty-state">暂无待审核候选。</p>';
+    $$(".candidate-item", container).forEach(item => {
+      $("form", item).addEventListener("submit", event => { event.preventDefault(); reviewOpenCandidate(item, "approve"); });
+      $(".reject-candidate", item).addEventListener("click", () => reviewOpenCandidate(item, "reject"));
+    });
+  } catch (error) {
+    container.innerHTML = `<p class="empty-state">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function reviewOpenCandidate(item, action) {
+  const form = $("form", item);
+  const fields = new FormData(form);
+  const button = action === "approve" ? $(".approve-candidate", item) : $(".reject-candidate", item);
+  setButtonBusy(button, true, "处理中...");
+  try {
+    await api(`/api/admin/open-candidates/${item.dataset.candidateId}/review`, {
+      method: "POST",
+      body: { action, roundNumber: fields.get("roundNumber"), division: fields.get("division") },
+    });
+    toast(action === "approve" ? "候选已加入答案集合" : "候选已驳回");
+    loadOpenCandidates();
+  } catch (error) {
+    toast(error.message, "error");
+    setButtonBusy(button, false);
   }
 }
 
@@ -538,6 +590,9 @@ async function reviewSubmission(item, action) {
         division: fields.get("division"),
         contestTime: dateValue ? Math.floor(new Date(`${dateValue}T00:00:00Z`).getTime() / 1000) : 0,
         brain: fields.get("brain") === "on",
+        openMode: fields.get("openMode") === "on",
+        acceptedAnswers: fields.get("acceptedAnswers"),
+        verificationText: fields.get("verificationText"),
         reviewNote: fields.get("reviewNote"),
       },
     });
@@ -560,6 +615,14 @@ async function submitSoloAnswer(event) {
       body: { token: state.solo.question.token, ...answerPayload("solo", state.solo.answerMode) },
     });
     if (!payload.settled) {
+      if (payload.pendingReview) {
+        $("#solo-answer-form").reset();
+        renderDivisionChoices("solo", state.solo.question);
+        setSoloAnswerMode("contest");
+        toast("这个答案尚未收录，已进入管理员审核；本次不扣机会");
+        cooldown = payload.retryAfter;
+        return;
+      }
       state.solo.attemptsUsed = payload.attemptsUsed;
       $("#solo-attempts-status").textContent = `${payload.attemptsUsed} / ${state.solo.maxAttempts} 次`;
       $("#solo-answer-form").reset();
@@ -701,6 +764,150 @@ async function endSoloSession() {
   toast("本次已结束");
 }
 
+function renderDailyBoard(players = []) {
+  const body = $("#daily-board-body");
+  body.innerHTML = players.length ? players.map(player => `<tr><td class="rank">#${player.rank}</td><td><strong>${escapeHtml(player.username)}</strong></td><td>${player.score.toLocaleString()}</td><td>${new Date(player.finishedAt * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</td></tr>`).join("") : '<tr><td colspan="4">今天还没有完成挑战的玩家</td></tr>';
+}
+
+function stopDailyTimer() {
+  clearInterval(state.daily.timer);
+  state.daily.timer = null;
+}
+
+function updateDailyTimer() {
+  const elapsed = Math.floor((Date.now() - state.daily.startedAt) / 1000);
+  const left = Math.max(0, state.daily.secondsLeft - elapsed);
+  $("#daily-timer").textContent = `${String(Math.floor(left / 60)).padStart(2, "0")}:${String(left % 60).padStart(2, "0")}`;
+  if (!left && !state.daily.settling) timeoutDaily();
+}
+
+function renderDaily(challenge) {
+  state.daily.challenge = challenge;
+  stopDailyTimer();
+  $("#daily-total").textContent = challenge.totalScore.toLocaleString();
+  const ready = $("#daily-ready");
+  const game = $("#daily-game");
+  if (challenge.status !== "playing") {
+    ready.classList.remove("hidden");
+    game.classList.add("hidden");
+    const button = $("#daily-start");
+    if (challenge.status === "finished") {
+      $("#daily-copy").textContent = `今日挑战已完成，总分 ${challenge.totalScore.toLocaleString()}。`;
+      button.classList.add("hidden");
+      renderDailyBoard(challenge.leaderboard || []);
+    } else {
+      $("#daily-copy").textContent = "所有玩家面对同一组五道题，每题限时 120 秒，每题最高 5000 分。";
+      button.classList.remove("hidden");
+      button.textContent = challenge.status === "between" ? `继续第 ${challenge.position + 1} 题` : "开始今日挑战";
+    }
+    return;
+  }
+  ready.classList.add("hidden");
+  game.classList.remove("hidden");
+  const question = challenge.question;
+  $("#daily-round-label").textContent = `第 ${question.position} / ${challenge.questionCount} 题`;
+  $("#daily-progress").style.width = `${100 * question.position / challenge.questionCount}%`;
+  $("#daily-clue").src = `${question.clueUrl}&v=${Date.now()}`;
+  $("#daily-answer-form").reset();
+  $("#daily-answer-form").classList.remove("hidden");
+  $("#daily-answer-form .submit-answer").disabled = false;
+  $("#daily-result").className = "result-strip hidden";
+  state.daily.secondsLeft = question.secondsLeft;
+  state.daily.startedAt = Date.now();
+  state.daily.settling = false;
+  state.daily.timer = setInterval(updateDailyTimer, 250);
+  updateDailyTimer();
+  $("#daily-contest-answer").focus();
+}
+
+async function loadDaily() {
+  try {
+    const payload = await api("/api/daily");
+    renderDaily(payload.challenge);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function loadDailyLeaderboard() {
+  try {
+    const payload = await api("/api/daily/leaderboard");
+    renderDailyBoard(payload.players);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function startDaily() {
+  const button = $("#daily-start");
+  setButtonBusy(button, true, "正在抽题...");
+  try {
+    const payload = await api("/api/daily/start", { method: "POST", body: {} });
+    renderDaily(payload.challenge);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+function renderDailyResolution(payload) {
+  stopDailyTimer();
+  state.daily.settling = false;
+  state.user = payload.user;
+  state.daily.challenge = payload.challenge;
+  renderUser();
+  $("#daily-total").textContent = payload.challenge.totalScore.toLocaleString();
+  $("#daily-answer-form").classList.add("hidden");
+  const result = $("#daily-result");
+  result.className = `result-strip${payload.score ? "" : " wrong"}`;
+  const scoreLine = payload.timedOut ? "本题超时，0 分" : `本题 ${payload.score.toLocaleString()} 分 · 距离 ${payload.distance}`;
+  const gaps = payload.timedOut ? "" : `<span>Contest 差 ${payload.contestGap}，题号差 ${payload.indexGap}${payload.exact ? "，完全命中" : ""}</span><br>`;
+  const nextLabel = payload.completed ? "查看今日榜" : "下一题";
+  result.innerHTML = `<strong>${scoreLine}</strong>${gaps}<span>${escapeHtml(payload.solution.title)} · ${solutionText(payload.solution)}</span> <button id="daily-next" class="text-btn" type="button">${nextLabel}</button>`;
+  $("#daily-next").addEventListener("click", () => {
+    if (payload.completed) renderDaily(payload.challenge);
+    else startDaily();
+  });
+}
+
+async function submitDailyAnswer(event) {
+  event.preventDefault();
+  const button = $("#daily-answer-form .submit-answer");
+  state.daily.settling = true;
+  setButtonBusy(button, true, "计分中...");
+  try {
+    const payload = await api("/api/daily/answer", {
+      method: "POST",
+      body: { contestAnswer: $("#daily-contest-answer").value },
+    });
+    renderDailyResolution(payload.result);
+  } catch (error) {
+    state.daily.settling = false;
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function timeoutDaily() {
+  if (state.daily.settling) return;
+  state.daily.settling = true;
+  $("#daily-answer-form .submit-answer").disabled = true;
+  try {
+    const payload = await api("/api/daily/timeout", { method: "POST", body: {} });
+    renderDailyResolution(payload.result);
+  } catch (error) {
+    state.daily.settling = false;
+    if (error.status === 409 && error.payload?.secondsLeft) {
+      state.daily.secondsLeft = error.payload.secondsLeft;
+      state.daily.startedAt = Date.now();
+      return;
+    }
+    toast(error.message, "error");
+  }
+}
+
 async function loadLeaderboard() {
   const body = $("#leaderboard-body");
   body.innerHTML = '<tr><td colspan="6">加载中...</td></tr>';
@@ -720,7 +927,14 @@ async function createRoom() {
       method: "POST",
       body: {
         rated: selectedValue("#battle-mode") === "true",
+        scoringMode: selectedValue("#battle-scoring-mode") || "classic",
         rounds: Number($("#battle-rounds").value),
+        roundSeconds: Number($("#battle-round-seconds").value),
+        abandonSeconds: Number($("#battle-abandon-seconds").value),
+        penaltyEnabled: selectedValue("#battle-penalty-mode") === "true",
+        penaltyFirst: Number($("#battle-penalty-first").value),
+        penaltySecond: Number($("#battle-penalty-second").value),
+        penaltyRepeat: Number($("#battle-penalty-repeat").value),
         filters: { difficulty: selectedValue("#battle-difficulty") || "medium" },
       },
     });
@@ -799,7 +1013,14 @@ function setBattleAnswerMode(mode) {
 }
 
 function renderBattle(match) {
-  $("#room-mode").textContent = match.rated ? "Rating 模式" : "娱乐模式";
+  state.battle.current = match;
+  $("#room-mode").textContent = `${match.rated ? "Rating 模式" : "娱乐模式"} · ${match.scoringMode === "distance" ? "积分赛" : "抢答赛"}`;
+  const penalties = match.rules.penalties;
+  $("#battle-rules-summary").innerHTML = [
+    `<span>每题 ${match.rules.roundSeconds} 秒</span>`,
+    `<span>${match.scoringMode === "distance" ? "单次锁定 · 每题最高 5000 分" : match.rules.penaltyEnabled ? `错答罚时 ${penalties[0]} / ${penalties[1]} / ${penalties[2]} 秒` : "错答不罚时"}</span>`,
+    `<span>一方放弃后最多等待 ${match.rules.abandonSeconds} 秒</span>`,
+  ].join("");
   if (match.status === "waiting") {
     $("#lobby-state").classList.remove("hidden");
     $("#battle-game").classList.add("hidden");
@@ -813,7 +1034,7 @@ function renderBattle(match) {
   $("#lobby-state").classList.add("hidden");
   $("#battle-game").classList.remove("hidden");
   renderScoreboard(match.players);
-  $("#battle-round-label").textContent = `第 ${match.round} / ${match.rounds} 题`;
+  $("#battle-round-label").textContent = `第 ${match.round} / ${match.rounds} 题${match.openMode ? " · 开放题" : ""}`;
   $("#battle-progress").style.width = `${100 * match.round / match.rounds}%`;
   $("#battle-timer").textContent = `${match.secondsLeft}s`;
 
@@ -836,21 +1057,53 @@ function renderBattle(match) {
     setBattleAnswerMode("contest");
     renderDivisionChoices("battle", match);
   }
+  $("#battle-answer-mode").classList.toggle("hidden", match.scoringMode === "distance");
 
   if (match.phase === "playing") {
-    $("#battle-result").className = "result-strip hidden";
-    $("#battle-answer-form").classList.toggle("hidden", match.answered);
-    if (match.answered) {
-      const result = $("#battle-result");
+    const form = $("#battle-answer-form");
+    const result = $("#battle-result");
+    const submit = $("#battle-answer-form .submit-answer");
+    const abandon = $("#abandon-battle");
+    form.classList.toggle("hidden", match.ownStatus !== "playing");
+    abandon.disabled = match.ownStatus !== "playing";
+    submit.dataset.original = match.scoringMode === "distance" ? "锁定答案" : "提交答案";
+    submit.disabled = !match.canSubmit;
+    submit.textContent = match.cooldownLeft > 0 ? `${match.cooldownLeft} 秒后可提交` : submit.dataset.original;
+    result.className = "result-strip hidden";
+    if (match.ownStatus === "correct") {
       result.className = "result-strip";
-      result.innerHTML = "<strong>已提交</strong><span>等待对手作答或倒计时结束。</span>";
+      result.innerHTML = `<strong>${match.scoringMode === "distance" ? "答案已锁定" : "回答正确"}</strong><span>等待对手完成本题。</span>`;
+    } else if (match.ownStatus === "scored") {
+      result.className = "result-strip";
+      result.innerHTML = "<strong>答案已锁定</strong><span>等待对手完成本题。</span>";
+    } else if (match.ownStatus === "abandoned") {
+      result.className = "result-strip wrong";
+      result.innerHTML = "<strong>你已放弃本题</strong><span>等待对手完成或短倒计时结束。</span>";
+    } else if (match.attempts || match.opponentAbandoned) {
+      const messages = [];
+      if (match.attempts) messages.push(`已尝试 ${match.attempts} 次`);
+      if (match.cooldownLeft > 0) messages.push(`错答罚时还剩 ${match.cooldownLeft} 秒`);
+      if (match.opponentAbandoned) messages.push(`对手已放弃，你还有 ${match.secondsLeft} 秒`);
+      result.className = `result-strip${match.cooldownLeft > 0 ? " wrong" : ""}`;
+      result.innerHTML = `<strong>${match.cooldownLeft > 0 ? "暂时不能提交" : "可以继续作答"}</strong><span>${messages.join(" · ")}</span>`;
     }
   } else if (match.phase === "reveal") {
     $("#battle-answer-form").classList.add("hidden");
     const result = $("#battle-result");
-    const rows = match.reveal.answers.map(a => `${escapeHtml(a.username)}：${a.correct ? `正确 +${a.points}` : "未命中"}`).join(" · ") || "本轮无人作答";
+    const labels = { correct: "完全命中", scored: "已计分", abandoned: "放弃", pending: "候选待审核", miss: "未命中", timeout: "未作答" };
+    const rows = match.reveal.answers.map(a => {
+      const attempts = a.attempts ? `，尝试 ${a.attempts} 次` : "";
+      const points = ["correct", "scored"].includes(a.status) ? ` +${a.points}` : "";
+      const distance = a.distance !== null && a.distance !== undefined ? `，距离 ${a.distance}` : "";
+      const answer = a.answer ? `（${escapeHtml(a.answer)}）` : "";
+      return `${escapeHtml(a.username)}：${labels[a.status] || "未作答"}${answer}${points}${distance}${attempts}`;
+    }).join(" · ") || "本轮无人作答";
     result.className = "result-strip";
-    result.innerHTML = `<strong>${escapeHtml(match.reveal.solution.title)} · ${match.reveal.solution.rating}</strong><span>${solutionText(match.reveal.solution)}</span><br><span>${rows}</span>`;
+    if (match.reveal.solutionWithheld) {
+      result.innerHTML = `<strong>最强大脑题不公开答案</strong><span>本题继续留在题库中。</span><br><span>${rows}</span>`;
+    } else {
+      result.innerHTML = `<strong>${escapeHtml(match.reveal.solution.title)} · ${match.reveal.solution.rating}</strong><span>${solutionText(match.reveal.solution)}</span><br><span>${rows}</span>`;
+    }
   }
 }
 
@@ -871,24 +1124,60 @@ async function submitBattleAnswer(event) {
   event.preventDefault();
   const button = $("#battle-answer-form .submit-answer");
   setButtonBusy(button, true, "判定中...");
+  let refresh = false;
   try {
     const payload = await api(`/api/matches/${state.battle.code}/answer`, {
       method: "POST",
       body: answerPayload("battle", state.battle.answerMode),
     });
-    toast(payload.correct ? `抢答正确，+${payload.points} 分` : "没有命中，本题已锁定", payload.correct ? "" : "error");
-    await pollBattle();
+    const wrongMessage = payload.pendingReview
+      ? "这个答案尚未收录，已送管理员审核；本次不计错答"
+      : payload.cooldown ? `没有命中，罚时 ${payload.cooldown} 秒` : "没有命中，可以继续尝试";
+    const scored = state.battle.current?.scoringMode === "distance" && payload.settled;
+    toast(scored ? `答案已锁定，+${payload.points} 分` : payload.correct ? `回答正确，+${payload.points} 分` : wrongMessage, payload.correct || payload.pendingReview || scored ? "" : "error");
+    refresh = true;
   } catch (error) {
     toast(error.message, "error");
   } finally {
     setButtonBusy(button, false);
   }
+  if (refresh) await pollBattle();
+}
+
+async function abandonBattleQuestion() {
+  const match = state.battle.current;
+  if (!match || match.phase !== "playing" || match.ownStatus !== "playing") return;
+  if (!window.confirm("放弃后本题不能继续作答，确定放弃吗？")) return;
+  const button = $("#abandon-battle");
+  setButtonBusy(button, true, "放弃中...");
+  try {
+    await api(`/api/matches/${state.battle.code}/abandon`, { method: "POST", body: {} });
+    toast("已放弃本题");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+  await pollBattle();
+}
+
+function updateBattlePenaltyControls() {
+  const enabled = selectedValue("#battle-penalty-mode") === "true";
+  $("#battle-penalty-settings").classList.toggle("disabled", !enabled);
+  $$("#battle-penalty-settings input").forEach(input => { input.disabled = !enabled; });
+}
+
+function updateBattleScoringControls() {
+  const distance = selectedValue("#battle-scoring-mode") === "distance";
+  $("#battle-scoring-hint").classList.toggle("hidden", !distance);
+  $("#battle-penalty-block").classList.toggle("hidden", distance);
 }
 
 function resetBattleRoom() {
   stopBattlePoll();
   state.battle.code = null;
   state.battle.roundSeen = 0;
+  state.battle.current = null;
   $("#battle-room").classList.add("hidden");
   $("#battle-setup").classList.remove("hidden");
 }
@@ -929,6 +1218,8 @@ function bindEvents() {
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
   $$("#solo-difficulty button, #battle-mode button, #battle-difficulty button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#battle-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBattleScoringControls(); }));
+  $$("#battle-penalty-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBattlePenaltyControls(); }));
   $$("#solo-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloModeControls(); }));
   $$("#solo-timing button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloTimingControls(); }));
   $("#solo-start").addEventListener("click", startSolo);
@@ -937,6 +1228,9 @@ function bindEvents() {
   $$('[data-answer-mode]').forEach(btn => btn.addEventListener("click", () => setSoloAnswerMode(btn.dataset.answerMode)));
   $("#solo-answer-form").addEventListener("submit", submitSoloAnswer);
   $("#refresh-board").addEventListener("click", loadLeaderboard);
+  $("#daily-start").addEventListener("click", startDaily);
+  $("#daily-answer-form").addEventListener("submit", submitDailyAnswer);
+  $("#refresh-daily-board").addEventListener("click", loadDailyLeaderboard);
   $("#submission-file").addEventListener("change", previewSubmissionFile);
   $("#paste-screenshot").addEventListener("click", readSubmissionClipboard);
   $("#submission-drop-zone").addEventListener("dragover", event => {
@@ -949,8 +1243,10 @@ function bindEvents() {
   $("#remove-submission-image").addEventListener("click", clearSubmissionImage);
   $("#submission-form").addEventListener("paste", pasteSubmissionScreenshot);
   $("#submission-form").addEventListener("submit", submitClue);
+  $("#submission-open").addEventListener("change", updateSubmissionOpenControls);
   $("#refresh-submissions").addEventListener("click", loadMySubmissions);
-  $("#refresh-reviews").addEventListener("click", loadAdminSubmissions);
+  $("#refresh-reviews").addEventListener("click", () => { loadAdminSubmissions(); loadOpenCandidates(); });
+  $("#refresh-open-candidates").addEventListener("click", loadOpenCandidates);
   $("#refresh-permissions").addEventListener("click", loadPermissionUsers);
   $("#create-room").addEventListener("click", createRoom);
   $("#join-room").addEventListener("click", joinRoom);
@@ -960,6 +1256,7 @@ function bindEvents() {
   });
   $("#start-battle").addEventListener("click", startBattle);
   $("#exit-room").addEventListener("click", leaveRoom);
+  $("#abandon-battle").addEventListener("click", abandonBattleQuestion);
   $$('[data-battle-answer-mode]').forEach(btn => btn.addEventListener("click", () => setBattleAnswerMode(btn.dataset.battleAnswerMode)));
   $("#battle-answer-form").addEventListener("submit", submitBattleAnswer);
 }

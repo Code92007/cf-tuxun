@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7">
+  <link rel="stylesheet" href="/static/styles.css?v=9">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -49,6 +49,7 @@
       <nav class="side-nav" aria-label="主导航">
         <button class="nav-item active" data-view="dashboard" type="button"><span aria-hidden="true">⌂</span>概览</button>
         <button class="nav-item" data-view="solo" type="button"><span aria-hidden="true">◎</span>单人图寻</button>
+        <button class="nav-item" data-view="daily" type="button"><span aria-hidden="true">◷</span>每日挑战</button>
         <button class="nav-item" data-view="battle" type="button"><span aria-hidden="true">⚔</span>双人对战</button>
         <button class="nav-item" data-view="submit" type="button"><span aria-hidden="true">＋</span>投稿线索</button>
         <button id="admin-nav" class="nav-item hidden" data-view="admin" type="button"><span aria-hidden="true">✓</span>审核投稿</button>
@@ -135,10 +136,12 @@
               </div>
               <fieldset class="round-filter">
                 <legend>场次类型</legend>
-                <label><input type="checkbox" value="Div. 1"> Div. 1</label>
-                <label><input type="checkbox" value="Div. 2"> Div. 2</label>
-                <label><input type="checkbox" value="Div. 3"> Div. 3</label>
-                <label><input type="checkbox" value="Edu"> Educational</label>
+                <label><input type="checkbox" value="Div. 1" checked> Div. 1</label>
+                <label><input type="checkbox" value="Div. 2" checked> Div. 2</label>
+                <label><input type="checkbox" value="Div. 1 + Div. 2" checked> Div. 1 + Div. 2</label>
+                <label><input type="checkbox" value="Div. 3" checked> Div. 3</label>
+                <label><input type="checkbox" value="Div. 4" checked> Div. 4</label>
+                <label><input type="checkbox" value="Edu" checked> Educational</label>
               </fieldset>
               <button id="solo-start" class="primary" type="button">开始图寻</button>
             </section>
@@ -183,8 +186,29 @@
             <section class="battle-create">
               <p class="kicker">CREATE ROOM</p><h3>发起一场对战</h3>
               <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
+              <div class="field-group">
+                <span class="field-label">赛制</span>
+                <div class="segmented" id="battle-scoring-mode"><button class="active" type="button" data-value="classic">抢答模式</button><button type="button" data-value="distance">积分模式</button></div>
+                <p id="battle-scoring-hint" class="form-hint hidden">每人每题只提交一次；Contest ID 与题号字母越接近越高，满分 5000，剩余时间最多影响 500 分。</p>
+              </div>
               <div class="field-group"><span class="field-label">题目难度</span><div class="segmented" id="battle-difficulty"><button type="button" data-value="easy">简单</button><button class="active" type="button" data-value="medium">中等</button><button type="button" data-value="hard">困难</button><button type="button" data-value="brain">最强大脑</button><button type="button" data-value="all">混合</button></div></div>
               <label>题目数量<select id="battle-rounds"><option value="3">3 题</option><option value="5" selected>5 题</option><option value="7">7 题</option></select></label>
+              <div class="field-group battle-rules-editor">
+                <span class="field-label">赛制规则</span>
+                <div class="battle-rule-grid">
+                  <label>单题时长（秒）<input id="battle-round-seconds" type="number" min="20" max="300" step="10" value="60"></label>
+                  <label>一方放弃后剩余（秒）<input id="battle-abandon-seconds" type="number" min="5" max="60" step="5" value="20"></label>
+                </div>
+              </div>
+              <div id="battle-penalty-block" class="field-group battle-rules-editor">
+                <span class="field-label">错答罚时</span>
+                <div class="segmented" id="battle-penalty-mode"><button class="active" type="button" data-value="true">启用</button><button type="button" data-value="false">不罚时</button></div>
+                <div id="battle-penalty-settings" class="battle-rule-grid penalty-grid">
+                  <label>第 1 次<input id="battle-penalty-first" type="number" min="1" max="30" value="3"></label>
+                  <label>第 2 次<input id="battle-penalty-second" type="number" min="1" max="30" value="5"></label>
+                  <label>第 3 次起<input id="battle-penalty-repeat" type="number" min="1" max="30" value="10"></label>
+                </div>
+              </div>
               <button id="create-room" class="primary" type="button">创建房间</button>
             </section>
             <section class="battle-join">
@@ -197,25 +221,54 @@
 
           <section id="battle-room" class="battle-room hidden">
             <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><div class="room-actions"><span id="room-mode" class="mode-badge">娱乐模式</span><button id="exit-room" class="secondary room-exit" type="button">退出房间</button></div></header>
+            <div id="battle-rules-summary" class="battle-rules-summary"></div>
             <div id="lobby-state" class="lobby-state">
               <div id="battle-players" class="player-versus"></div>
               <p id="lobby-message">等待另一位玩家加入...</p>
               <button id="start-battle" class="primary hidden" type="button">开始对战</button>
             </div>
             <div id="battle-game" class="game-layout hidden">
-              <div class="game-head"><div class="game-progress"><span id="battle-round-label">第 1 / 5 题</span><div><i id="battle-progress"></i></div></div><div class="timer"><span>剩余</span><strong id="battle-timer">30s</strong></div></div>
+              <div class="game-head"><div class="game-progress"><span id="battle-round-label">第 1 / 5 题</span><div><i id="battle-progress"></i></div></div><div class="timer"><span>剩余</span><strong id="battle-timer">60s</strong></div></div>
               <div id="battle-scoreboard" class="scoreboard"></div>
               <figure class="clue-frame"><img id="battle-clue" alt="对战题面截图"></figure>
               <section class="answer-panel">
-                <div class="answer-mode segmented compact"><button class="active" data-battle-answer-mode="contest" type="button">Contest 写法</button><button data-battle-answer-mode="round" type="button">Round 写法</button></div>
+                <div id="battle-answer-mode" class="answer-mode segmented compact"><button class="active" data-battle-answer-mode="contest" type="button">Contest 写法</button><button data-battle-answer-mode="round" type="button">Round 写法</button></div>
                 <form id="battle-answer-form" class="answer-form">
                   <div id="battle-contest-fields" class="answer-fields one-field"><label><span>你的答案</span><input id="battle-contest-answer" autocomplete="off" placeholder="2269E" maxlength="10"></label></div>
                   <div id="battle-round-fields" class="answer-fields hidden"><label><span>Round</span><input id="battle-round-number" type="number" min="1" placeholder="1124"></label><div id="battle-division-wrap" class="division-choice hidden"><span>组别</span><div id="battle-divisions" class="segmented compact"></div></div><label><span>题号</span><input id="battle-round-index" maxlength="2" placeholder="E"></label></div>
-                  <button class="primary submit-answer" type="submit">抢答</button>
+                  <div class="battle-answer-actions"><button id="abandon-battle" class="danger-btn" type="button">放弃本题</button><button class="primary submit-answer" type="submit">提交答案</button></div>
                 </form>
                 <div id="battle-result" class="result-strip hidden"></div>
               </section>
             </div>
+          </section>
+        </section>
+
+        <section id="view-daily" class="view">
+          <section class="daily-shell">
+            <header class="daily-intro">
+              <div><p class="kicker">DAILY FIVE</p><h3>每日挑战</h3><p id="daily-copy">所有玩家面对同一组五道题，每题限时 120 秒，每题最高 5000 分。</p></div>
+              <div class="daily-total"><span>今日总分</span><strong id="daily-total">0</strong><small>/ 25000</small></div>
+            </header>
+            <div id="daily-ready" class="daily-ready">
+              <p>每天北京时间 00:00 更新。每题只能提交一次，先看准 Contest ID 和题号字母再锁定答案。</p>
+              <button id="daily-start" class="primary" type="button">开始今日挑战</button>
+            </div>
+            <div id="daily-game" class="game-layout hidden">
+              <div class="game-head"><div class="game-progress"><span id="daily-round-label">第 1 / 5 题</span><div><i id="daily-progress"></i></div></div><div class="timer"><span>剩余</span><strong id="daily-timer">02:00</strong></div></div>
+              <figure class="clue-frame"><img id="daily-clue" alt="每日挑战题面截图"></figure>
+              <section class="answer-panel">
+                <form id="daily-answer-form" class="answer-form">
+                  <div class="answer-fields one-field"><label><span>锁定答案</span><input id="daily-contest-answer" autocomplete="off" placeholder="2269E" maxlength="10"></label></div>
+                  <button class="primary submit-answer" type="submit">锁定答案</button>
+                </form>
+                <div id="daily-result" class="result-strip hidden"></div>
+              </section>
+            </div>
+          </section>
+          <section class="section-block daily-board-block">
+            <div class="section-head"><div><p class="kicker">TODAY'S RANKING</p><h3>今日积分榜</h3></div><button id="refresh-daily-board" class="text-btn" type="button">刷新</button></div>
+            <div class="table-wrap"><table><thead><tr><th>排名</th><th>玩家</th><th>总分</th><th>完成时间</th></tr></thead><tbody id="daily-board-body"><tr><td colspan="4">完成五题后即可上榜</td></tr></tbody></table></div>
           </section>
         </section>
 
@@ -236,6 +289,12 @@
                 <label>或直接填写文字线索<textarea id="submission-text" rows="4" maxlength="3000" placeholder="图片和文字至少提供一种"></textarea></label>
                 <label>补充说明<textarea id="submission-note" rows="3" maxlength="1000" placeholder="说明为什么这段线索能够唯一辨认，可选"></textarea></label>
                 <label class="check-line"><input id="submission-brain" type="checkbox"> 建议放入“最强大脑”题池</label>
+                <label class="check-line"><input id="submission-open" type="checkbox"> 开放题：这段线索可能对应多道题</label>
+                <div id="submission-open-details" class="open-details hidden">
+                  <label>其他已知正确题号<input id="submission-accepted-answers" maxlength="500" placeholder="例如 123A, 456B"></label>
+                  <label>自动核验用题面原文<textarea id="submission-verification-text" rows="4" maxlength="5000" placeholder="粘贴截图里可辨认的英文原文；越完整越容易自动补全答案"></textarea></label>
+                  <p class="form-hint">未收录答案会先比对 Codeforces 题面；低置信结果进入管理员审核，不扣玩家机会。</p>
+                </div>
                 <p class="form-hint">审核通过后会新增一个线索变体；同题已有线索和历次投稿不会被覆盖。</p>
                 <button class="primary" type="submit">提交审核</button>
               </form>
@@ -252,6 +311,11 @@
             <div class="section-head"><div><p class="kicker">REVIEW QUEUE</p><h3>投稿审核</h3></div><button id="refresh-reviews" class="text-btn" type="button">刷新</button></div>
             <p class="section-copy">原图和审核历史会一直保留。通过后只新增线索变体，不覆盖同题的其他问法。</p>
             <div id="review-list" class="review-list"><p class="empty-state">暂无待审核投稿。</p></div>
+          </section>
+          <section class="section-block open-candidate-block">
+            <div class="section-head"><div><p class="kicker">OPEN ANSWERS</p><h3>开放题候选答案</h3></div><button id="refresh-open-candidates" class="text-btn" type="button">刷新</button></div>
+            <p class="section-copy">只有高置信题面匹配会自动通过；其余候选由管理员确认后加入答案集合。</p>
+            <div id="open-candidate-list" class="review-list"><p class="empty-state">暂无待审核候选。</p></div>
           </section>
         </section>
 
@@ -272,6 +336,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=7" defer></script>
+  <script src="/static/app.js?v=9" defer></script>
 </body>
 </html>

@@ -7,13 +7,24 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 
 TEST_DATA = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = TEST_DATA.name
 
-from app import Handler, RATE_BUCKETS, ThreadingHTTPServer, check_answer  # noqa: E402
-from cfshot.db import get_db, init_db, load_json  # noqa: E402
+from app import (  # noqa: E402
+    Handler,
+    RATE_BUCKETS,
+    ThreadingHTTPServer,
+    check_answer,
+    daily_day,
+    distance_score,
+    record_question_exposure,
+    select_fresh_questions,
+    settle_question_exposure,
+)
+from cfshot.db import get_db, init_db, load_json, matching_question_ids, parse_filters  # noqa: E402
 from scripts.import_pack import validate_pack  # noqa: E402
 
 
@@ -125,6 +136,109 @@ class AppTest(unittest.TestCase):
         status, room = host.request("GET", f"/api/matches/{code}")
         self.assertEqual(status, 200)
         self.assertEqual(room["match"]["phase"], "reveal")
+
+    def test_battle_penalties_and_abandon_grace_period(self):
+        host, _ = self.register("penalty_host")
+        guest, _ = self.register("penalty_guest")
+        status, created = host.request("POST", "/api/matches", {
+            "rounds": 3,
+            "roundSeconds": 90,
+            "abandonSeconds": 20,
+            "penaltyEnabled": True,
+            "penaltyFirst": 3,
+            "penaltySecond": 5,
+            "penaltyRepeat": 10,
+            "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, created)
+        code = created["code"]
+        self.assertEqual(guest.request("POST", "/api/matches/join", {"code": code})[0], 200)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/start", {})[0], 200)
+
+        status, room = host.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, room)
+        self.assertEqual(room["match"]["rules"]["roundSeconds"], 90)
+        self.assertEqual(room["match"]["rules"]["penalties"], [3, 5, 10])
+        wrong = {"answerMode": "contest", "contestAnswer": "1A"}
+
+        status, first = host.request("POST", f"/api/matches/{code}/answer", wrong)
+        self.assertEqual(status, 200, first)
+        self.assertFalse(first["settled"])
+        self.assertEqual(first["attempts"], 1)
+        self.assertEqual(first["cooldown"], 3)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/answer", wrong)[0], 429)
+
+        match = get_db().execute("SELECT id FROM matches WHERE code=?", (code,)).fetchone()
+        get_db().execute(
+            "UPDATE match_answers SET cooldown_until=? WHERE match_id=? AND user_id=(SELECT id FROM users WHERE username='penalty_host')",
+            (time.time() - 1, match["id"]),
+        )
+        status, second = host.request("POST", f"/api/matches/{code}/answer", wrong)
+        self.assertEqual(status, 200, second)
+        self.assertEqual(second["attempts"], 2)
+        self.assertEqual(second["cooldown"], 5)
+        get_db().execute(
+            "UPDATE match_answers SET cooldown_until=? WHERE match_id=? AND user_id=(SELECT id FROM users WHERE username='penalty_host')",
+            (time.time() - 1, match["id"]),
+        )
+        status, third = host.request("POST", f"/api/matches/{code}/answer", wrong)
+        self.assertEqual(status, 200, third)
+        self.assertEqual(third["attempts"], 3)
+        self.assertEqual(third["cooldown"], 10)
+
+        status, abandoned = host.request("POST", f"/api/matches/{code}/abandon", {})
+        self.assertEqual(status, 200, abandoned)
+        self.assertLessEqual(abandoned["secondsLeft"], 20)
+        status, guest_view = guest.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, guest_view)
+        self.assertTrue(guest_view["match"]["opponentAbandoned"])
+        self.assertLessEqual(guest_view["match"]["secondsLeft"], 20)
+
+        self.assertEqual(guest.request("POST", f"/api/matches/{code}/abandon", {})[0], 200)
+        status, reveal = host.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, reveal)
+        self.assertEqual(reveal["match"]["phase"], "reveal")
+        statuses = {row["username"]: row["status"] for row in reveal["match"]["reveal"]["answers"]}
+        self.assertEqual(statuses, {"penalty_host": "abandoned", "penalty_guest": "abandoned"})
+
+    def test_battle_can_disable_wrong_answer_penalty(self):
+        host, _ = self.register("no_penalty_host")
+        guest, _ = self.register("no_penalty_guest")
+        status, created = host.request("POST", "/api/matches", {
+            "rounds": 3,
+            "penaltyEnabled": False,
+            "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, created)
+        code = created["code"]
+        self.assertEqual(guest.request("POST", "/api/matches/join", {"code": code})[0], 200)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/start", {})[0], 200)
+        wrong = {"answerMode": "contest", "contestAnswer": "1A"}
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/answer", wrong)[1]["cooldown"], 0)
+        status, second = host.request("POST", f"/api/matches/{code}/answer", wrong)
+        self.assertEqual(status, 200, second)
+        self.assertEqual(second["attempts"], 2)
+        self.assertEqual(second["cooldown"], 0)
+
+    def test_question_selection_avoids_recent_history_for_both_players(self):
+        _, first = self.register("history_one")
+        _, second = self.register("history_two")
+        user_ids = [first["user"]["id"], second["user"]["id"]]
+        candidates = [row["id"] for row in get_db().execute("SELECT id FROM questions ORDER BY id LIMIT 8")]
+        for index, question_id in enumerate(candidates[:4]):
+            user_id = user_ids[index % 2]
+            record_question_exposure(user_id, question_id, "test", str(index))
+            settle_question_exposure(user_id, "test", str(index), "correct")
+        selected = select_fresh_questions(candidates, 3, user_ids)
+        self.assertEqual(len(selected), 3)
+        self.assertTrue(set(selected).isdisjoint(candidates[:4]))
+
+    def test_round_type_filters_include_new_categories_without_overlap(self):
+        parsed = parse_filters({"roundTypes": ["Div. 1", "Div. 1 + Div. 2", "Div. 4", "Edu"]})
+        self.assertEqual(parsed["roundTypes"], ["Div. 1", "Div. 1 + Div. 2", "Div. 4", "Edu"])
+        shared = get_db().execute("SELECT id FROM questions WHERE canonical_key='2268C'").fetchone()["id"]
+        self.assertIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1 + Div. 2"]}, 5000))
+        self.assertNotIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1"]}, 5000))
 
     def test_players_can_leave_waiting_rooms(self):
         host, _ = self.register("leave_host")
@@ -337,6 +451,164 @@ class AppTest(unittest.TestCase):
         self.assertEqual(super_client.request(
             "POST", f'/api/admin/users/{super_user["user"]["id"]}/role', {"isAdmin": False}
         )[0], 400)
+
+    def test_distance_score_rewards_accuracy_before_speed(self):
+        question_id = get_db().execute("SELECT id FROM questions WHERE canonical_key='2268C'").fetchone()["id"]
+        exact_slow = distance_score(question_id, 2269, "E", 115, 120)
+        exact_fast = distance_score(question_id, 2269, "E", 1, 120)
+        nearby = distance_score(question_id, 2268, "D", 1, 120)
+        far = distance_score(question_id, 100, "A", 1, 120)
+        self.assertGreater(exact_fast["score"], exact_slow["score"])
+        self.assertGreater(exact_slow["score"], nearby["score"])
+        self.assertGreater(nearby["score"], far["score"])
+        self.assertLessEqual(exact_fast["score"], 5000)
+        self.assertEqual(far["score"], 0)
+
+    def test_distance_battle_locks_one_guess_and_compares_total_scores(self):
+        host, _ = self.register("distance_host")
+        guest, _ = self.register("distance_guest")
+        status, created = host.request("POST", "/api/matches", {
+            "rounds": 3,
+            "roundSeconds": 120,
+            "scoringMode": "distance",
+            "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, created)
+        code = created["code"]
+        self.assertEqual(guest.request("POST", "/api/matches/join", {"code": code})[0], 200)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/start", {})[0], 200)
+        match = get_db().execute("SELECT * FROM matches WHERE code=?", (code,)).fetchone()
+        question_id = load_json(match["question_ids_json"])[0]
+        alias = get_db().execute("SELECT * FROM aliases WHERE question_id=? ORDER BY id LIMIT 1", (question_id,)).fetchone()
+        exact = f'{alias["contest_id"]}{alias["problem_index"]}'
+
+        status, host_score = host.request("POST", f"/api/matches/{code}/answer", {
+            "answerMode": "contest", "contestAnswer": exact,
+        })
+        self.assertEqual(status, 200, host_score)
+        self.assertTrue(host_score["settled"])
+        self.assertGreater(host_score["points"], 4500)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/answer", {
+            "answerMode": "contest", "contestAnswer": exact,
+        })[0], 409)
+
+        status, guest_score = guest.request("POST", f"/api/matches/{code}/answer", {
+            "answerMode": "contest", "contestAnswer": "1A",
+        })
+        self.assertEqual(status, 200, guest_score)
+        self.assertEqual(guest_score["points"], 0)
+        status, room = host.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, room)
+        self.assertEqual(room["match"]["phase"], "reveal")
+        self.assertEqual(room["match"]["scoringMode"], "distance")
+
+    def test_daily_challenge_is_shared_and_only_completed_runs_rank(self):
+        first, _ = self.register("daily_first")
+        second, _ = self.register("daily_second")
+        status, first_ready = first.request("GET", "/api/daily")
+        self.assertEqual(status, 200, first_ready)
+        self.assertEqual(first_ready["challenge"]["status"], "ready")
+        status, first_started = first.request("POST", "/api/daily/start", {})
+        self.assertEqual(status, 200, first_started)
+        status, second_started = second.request("POST", "/api/daily/start", {})
+        self.assertEqual(status, 200, second_started)
+        self.assertEqual(first_started["challenge"]["question"]["position"], 1)
+        self.assertEqual(second_started["challenge"]["question"]["position"], 1)
+        day = daily_day()
+        self.assertEqual(get_db().execute(
+            "SELECT COUNT(*) n FROM daily_questions WHERE day=?", (day,)
+        ).fetchone()["n"], 5)
+        self.assertFalse(any(row["username"] == "daily_first" for row in first.request(
+            "GET", "/api/daily/leaderboard"
+        )[1]["players"]))
+
+        for position in range(5):
+            question_id = get_db().execute(
+                "SELECT question_id FROM daily_questions WHERE day=? AND position=?", (day, position)
+            ).fetchone()["question_id"]
+            alias = get_db().execute(
+                "SELECT * FROM aliases WHERE question_id=? ORDER BY id LIMIT 1", (question_id,)
+            ).fetchone()
+            status, answered = first.request("POST", "/api/daily/answer", {
+                "contestAnswer": f'{alias["contest_id"]}{alias["problem_index"]}',
+            })
+            self.assertEqual(status, 200, answered)
+            self.assertGreater(answered["result"]["score"], 4500)
+            if position < 4:
+                self.assertEqual(first.request("POST", "/api/daily/start", {})[0], 200)
+        self.assertTrue(answered["result"]["completed"])
+        status, board = first.request("GET", "/api/daily/leaderboard")
+        self.assertEqual(status, 200, board)
+        self.assertEqual(board["players"][0]["username"], "daily_first")
+        self.assertGreater(board["players"][0]["score"], 22500)
+
+    def test_open_mode_queues_unknown_answers_without_spending_attempts(self):
+        client, registered = self.register("open_answer_user")
+        db = get_db()
+        cursor = db.execute(
+            """
+            INSERT INTO questions(
+                canonical_key,title,clue,rating,contest_time,round_type,source_url,open_mode,verification_text
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            ("open-test", "Open Test", "A sufficiently unique open clue for tests", 1500, 1, "Div. 2", "https://codeforces.com", 1, ""),
+        )
+        question_id = cursor.lastrowid
+        db.execute(
+            "INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
+            (question_id, 2291, "A", 1, "Div. 2"),
+        )
+        token = "open-pending-token"
+        db.execute(
+            """
+            INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,time_limit,max_attempts,started_at)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (token, registered["user"]["id"], question_id, "medium", 120, 10, time.time()),
+        )
+        status, pending = client.request("POST", "/api/quiz/answer", {
+            "token": token, "answerMode": "contest", "contestAnswer": "2292B",
+        })
+        self.assertEqual(status, 200, pending)
+        self.assertTrue(pending["pendingReview"])
+        self.assertEqual(pending["attemptsUsed"], 0)
+        self.assertEqual(db.execute(
+            "SELECT attempt_count FROM quiz_rounds WHERE token=?", (token,)
+        ).fetchone()["attempt_count"], 0)
+
+        db.execute("UPDATE users SET is_admin=1 WHERE id=?", (registered["user"]["id"],))
+        status, reviewed = client.request(
+            "POST", f'/api/admin/open-candidates/{pending["candidateId"]}/review', {"action": "approve"}
+        )
+        self.assertEqual(status, 200, reviewed)
+        self.assertTrue(check_answer(question_id, {
+            "answerMode": "contest", "contestAnswer": "2292B",
+        })[0])
+
+        second = db.execute(
+            """
+            INSERT INTO questions(
+                canonical_key,title,clue,rating,contest_time,round_type,source_url,open_mode,verification_text
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            ("open-auto-test", "Open Auto", "Another open clue", 1500, 1, "Div. 2", "https://codeforces.com", 1,
+             "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi"),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
+            (second, 2293, "C", 2, "Div. 2"),
+        )
+        auto_token = "open-auto-token"
+        db.execute(
+            "INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,started_at) VALUES(?,?,?,?,?)",
+            (auto_token, registered["user"]["id"], second, "medium", time.time()),
+        )
+        with patch("app.fetch_codeforces_problem_text", return_value="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi"):
+            status, approved = client.request("POST", "/api/quiz/answer", {
+                "token": auto_token, "answerMode": "contest", "contestAnswer": "2294D",
+            })
+        self.assertEqual(status, 200, approved)
+        self.assertTrue(approved["correct"])
 
     def test_existing_alias_schema_migrates_without_losing_data(self):
         from cfshot import db as db_module

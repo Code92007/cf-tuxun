@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=9">
+  <link rel="stylesheet" href="/static/styles.css?v=11">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -66,7 +66,7 @@
     <div class="workspace">
       <header class="topbar">
         <button id="menu-btn" class="icon-btn mobile-only" type="button" aria-label="打开菜单">☰</button>
-        <div><p class="kicker" id="page-eyebrow">OVERVIEW</p><h2 id="page-title">今天也来认几道题</h2></div>
+        <div><p class="kicker" id="page-eyebrow">OVERVIEW</p><h2 id="page-title">属于算法竞赛的图寻</h2></div>
         <div class="top-score"><span>总积分</span><strong id="top-score">0</strong></div>
       </header>
 
@@ -108,7 +108,17 @@
               <p class="kicker">QUESTION POOL</p>
               <h3>选择本局范围</h3>
               <div class="field-group">
-                <span class="field-label">计分模式</span>
+                <span class="field-label">题型</span>
+                <div class="segmented" id="solo-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
+                <p id="solo-open-rule" class="form-hint hidden">只从开放题池抽题；一道线索可能对应多道题，回答任一已确认答案均算正确。</p>
+              </div>
+              <div class="field-group">
+                <span class="field-label">计分方式</span>
+                <div class="segmented" id="solo-scoring-mode"><button class="active" type="button" data-value="classic">传统对错</button><button type="button" data-value="distance">距离积分</button></div>
+                <p id="solo-scoring-hint" class="form-hint hidden">答案只锁定一次；根据 Contest ID 与题号字母的距离计 0-5000 分，限时局还会计算剩余时间。</p>
+              </div>
+              <div class="field-group">
+                <span class="field-label">对局类型</span>
                 <div class="segmented" id="solo-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div>
                 <p id="solo-rating-rule" class="form-hint hidden">固定混合难度和 120 秒倒计时；Contest ID 至少跨度 200、时间至少覆盖 3 年，且筛选后不少于 8 题。</p>
               </div>
@@ -161,7 +171,7 @@
             <div class="solo-session-actions"><div class="solo-session-meta"><span id="solo-mode-status" class="mode-badge">娱乐模式</span><span id="solo-attempts-status" class="attempts-status hidden">0 / 10 次</span></div><div><button id="abandon-solo" class="danger-btn" type="button">放弃此题</button><button id="end-solo" class="secondary" type="button">结束本次</button></div></div>
             <figure class="clue-frame"><img id="solo-clue" alt="隐藏标题和题号的 Codeforces 题面截图"></figure>
             <section class="answer-panel">
-              <div class="answer-mode segmented compact">
+              <div id="solo-answer-mode" class="answer-mode segmented compact">
                 <button class="active" data-answer-mode="contest" type="button">Contest 写法</button>
                 <button data-answer-mode="round" type="button">Round 写法</button>
               </div>
@@ -171,8 +181,9 @@
                 </div>
                 <div id="solo-round-fields" class="answer-fields hidden">
                   <label><span>Round</span><input id="solo-round-number" type="number" min="1" placeholder="1124"></label>
-                  <div id="solo-division-wrap" class="division-choice hidden"><span>组别</span><div id="solo-divisions" class="segmented compact"></div></div>
+                  <label id="solo-division-wrap" class="division-choice hidden"><span>组别（可空）</span><input id="solo-division" autocomplete="off" maxlength="2" placeholder="1 / 2 / 3 / 4 / 12 / E"></label>
                   <label><span>题号</span><input id="solo-round-index" maxlength="2" placeholder="E"></label>
+                  <p class="round-division-help">组别可留空；同一 Round 存在多个组别时再填。12 表示 Div. 1+2，E 表示 Educational。</p>
                 </div>
                 <button class="primary submit-answer" type="submit">提交答案</button>
               </form>
@@ -185,6 +196,11 @@
           <div id="battle-setup" class="battle-setup">
             <section class="battle-create">
               <p class="kicker">CREATE ROOM</p><h3>发起一场对战</h3>
+              <div class="field-group">
+                <span class="field-label">题型</span>
+                <div class="segmented" id="battle-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
+                <p id="battle-open-rule" class="form-hint hidden">本房间只使用开放题池；任一已确认答案均有效。</p>
+              </div>
               <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
               <div class="field-group">
                 <span class="field-label">赛制</span>
@@ -235,7 +251,7 @@
                 <div id="battle-answer-mode" class="answer-mode segmented compact"><button class="active" data-battle-answer-mode="contest" type="button">Contest 写法</button><button data-battle-answer-mode="round" type="button">Round 写法</button></div>
                 <form id="battle-answer-form" class="answer-form">
                   <div id="battle-contest-fields" class="answer-fields one-field"><label><span>你的答案</span><input id="battle-contest-answer" autocomplete="off" placeholder="2269E" maxlength="10"></label></div>
-                  <div id="battle-round-fields" class="answer-fields hidden"><label><span>Round</span><input id="battle-round-number" type="number" min="1" placeholder="1124"></label><div id="battle-division-wrap" class="division-choice hidden"><span>组别</span><div id="battle-divisions" class="segmented compact"></div></div><label><span>题号</span><input id="battle-round-index" maxlength="2" placeholder="E"></label></div>
+                  <div id="battle-round-fields" class="answer-fields hidden"><label><span>Round</span><input id="battle-round-number" type="number" min="1" placeholder="1124"></label><label id="battle-division-wrap" class="division-choice hidden"><span>组别（可空）</span><input id="battle-division" autocomplete="off" maxlength="2" placeholder="1 / 2 / 3 / 4 / 12 / E"></label><label><span>题号</span><input id="battle-round-index" maxlength="2" placeholder="E"></label><p class="round-division-help">组别可留空；同一 Round 存在多个组别时再填。12 表示 Div. 1+2，E 表示 Educational。</p></div>
                   <div class="battle-answer-actions"><button id="abandon-battle" class="danger-btn" type="button">放弃本题</button><button class="primary submit-answer" type="submit">提交答案</button></div>
                 </form>
                 <div id="battle-result" class="result-strip hidden"></div>
@@ -336,6 +352,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=9" defer></script>
+  <script src="/static/app.js?v=11" defer></script>
 </body>
 </html>

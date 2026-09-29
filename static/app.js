@@ -3,7 +3,7 @@ const state = {
   csrf: "",
   authMode: "login",
   view: "dashboard",
-  solo: { filters: null, question: null, answerMode: "contest", rated: false, resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, startedAt: 0, timer: null, retryTimer: null },
+  solo: { filters: null, question: null, answerMode: "contest", rated: false, scoringMode: "classic", resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, startedAt: 0, timer: null, retryTimer: null },
   daily: { challenge: null, timer: null, startedAt: 0, secondsLeft: 0, settling: false },
   battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0, current: null },
   uploadData: "",
@@ -97,7 +97,7 @@ function showAuthenticated(authenticated) {
 }
 
 const viewMeta = {
-  dashboard: ["OVERVIEW", "今天也来认几道题"],
+  dashboard: ["OVERVIEW", "属于算法竞赛的图寻"],
   solo: ["SOLO QUIZ", "单人图寻"],
   daily: ["DAILY FIVE", "每日挑战"],
   battle: ["VERSUS", "双人对战"],
@@ -166,12 +166,18 @@ async function logout() {
 function soloFilters() {
   return {
     difficulty: selectedValue("#solo-difficulty") || "medium",
+    questionMode: selectedValue("#solo-question-mode") || "standard",
     contestMin: $("#solo-contest-min").value,
     contestMax: $("#solo-contest-max").value,
     yearMin: $("#solo-year-min").value,
     yearMax: $("#solo-year-max").value,
     roundTypes: $$(".round-filter input:checked").map(el => el.value),
   };
+}
+
+function updateQuestionModeHints() {
+  $("#solo-open-rule").classList.toggle("hidden", selectedValue("#solo-question-mode") !== "open");
+  $("#battle-open-rule").classList.toggle("hidden", selectedValue("#battle-question-mode") !== "open");
 }
 
 function updateSoloModeControls() {
@@ -187,17 +193,45 @@ function updateSoloModeControls() {
   $$("#solo-timing button").forEach(button => { button.disabled = rated; });
   $("#solo-time-limit").disabled = rated;
   updateSoloTimingControls();
+  updateBrainScoringCompatibility();
 }
 
 function updateSoloTimingControls() {
   const timed = selectedValue("#solo-timing") === "true";
+  const distance = selectedValue("#solo-scoring-mode") === "distance";
   $("#solo-time-limit-wrap").classList.toggle("hidden", !timed);
-  $("#solo-attempt-rule").classList.toggle("hidden", !timed);
+  $("#solo-attempt-rule").classList.toggle("hidden", !timed || distance);
+}
+
+function updateSoloScoringControls() {
+  const distance = selectedValue("#solo-scoring-mode") === "distance";
+  $("#solo-scoring-hint").classList.toggle("hidden", !distance);
+  updateSoloTimingControls();
+}
+
+function updateBrainScoringCompatibility() {
+  const soloBrain = selectedValue("#solo-difficulty") === "brain";
+  const soloDistance = $("#solo-scoring-mode button[data-value='distance']");
+  soloDistance.disabled = soloBrain;
+  if (soloBrain && selectedValue("#solo-scoring-mode") === "distance") {
+    selectSegment($("#solo-scoring-mode"), $("#solo-scoring-mode button[data-value='classic']"));
+    updateSoloScoringControls();
+    toast("最强大脑不会提供距离分，已切换为传统对错");
+  }
+  const battleBrain = selectedValue("#battle-difficulty") === "brain";
+  const battleDistance = $("#battle-scoring-mode button[data-value='distance']");
+  battleDistance.disabled = battleBrain;
+  if (battleBrain && selectedValue("#battle-scoring-mode") === "distance") {
+    selectSegment($("#battle-scoring-mode"), $("#battle-scoring-mode button[data-value='classic']"));
+    updateBattleScoringControls();
+    toast("最强大脑不会提供距离分，已切换为抢答模式");
+  }
 }
 
 async function startSolo() {
   state.solo.filters = soloFilters();
   state.solo.rated = selectedValue("#solo-mode") === "true";
+  state.solo.scoringMode = selectedValue("#solo-scoring-mode") || "classic";
   state.solo.timed = state.solo.rated || selectedValue("#solo-timing") === "true";
   state.solo.timeLimit = state.solo.rated ? 120 : Number($("#solo-time-limit").value || 120);
   state.solo.round = 0;
@@ -212,10 +246,17 @@ async function nextSoloQuestion() {
     setButtonBusy(button, true, "正在抽题...");
     const payload = await api("/api/quiz/next", {
       method: "POST",
-      body: { filters: state.solo.filters, rated: state.solo.rated, timed: state.solo.timed, timeLimit: state.solo.timeLimit },
+      body: {
+        filters: state.solo.filters,
+        rated: state.solo.rated,
+        scoringMode: state.solo.scoringMode,
+        timed: state.solo.timed,
+        timeLimit: state.solo.timeLimit,
+      },
     });
     state.solo.question = payload.question;
     state.solo.rated = payload.rated;
+    state.solo.scoringMode = payload.question.scoringMode;
     state.solo.resolved = false;
     state.solo.settling = false;
     state.solo.timed = payload.question.timed;
@@ -233,14 +274,15 @@ async function nextSoloQuestion() {
     $("#abandon-solo").classList.remove("hidden");
     $("#abandon-solo").disabled = false;
     $("#solo-answer-form .submit-answer").disabled = false;
-    $("#solo-answer-form .submit-answer").textContent = "提交答案";
-    $("#solo-mode-status").textContent = `${state.solo.rated ? "Rating 模式" : "娱乐模式"}${payload.question.openMode ? " · 开放题" : ""}`;
-    $("#solo-attempts-status").classList.toggle("hidden", !state.solo.timed);
+    $("#solo-answer-form .submit-answer").textContent = state.solo.scoringMode === "distance" ? "锁定答案" : "提交答案";
+    $("#solo-mode-status").textContent = `${payload.question.openMode ? "开放多解" : "普通题"} · ${state.solo.rated ? "Rating 模式" : "娱乐模式"} · ${state.solo.scoringMode === "distance" ? "距离积分" : "传统对错"}`;
+    $("#solo-attempts-status").classList.toggle("hidden", !state.solo.timed || state.solo.scoringMode === "distance");
     $("#solo-attempts-status").textContent = `0 / ${state.solo.maxAttempts} 次`;
     $("#solo-timer-label").textContent = state.solo.timed ? "剩余" : "用时";
     $("#solo-answer-form").reset();
     renderDivisionChoices("solo", payload.question);
     setSoloAnswerMode("contest");
+    $("#solo-answer-mode").classList.toggle("hidden", state.solo.scoringMode === "distance");
     $("#solo-contest-answer").focus();
     clearInterval(state.solo.timer);
     state.solo.timer = setInterval(updateSoloTimer, 250);
@@ -265,21 +307,14 @@ function updateSoloTimer() {
 
 function renderDivisionChoices(prefix, question) {
   const wrap = $(`#${prefix}-division-wrap`);
-  const container = $(`#${prefix}-divisions`);
   wrap.classList.toggle("hidden", !question.needsDivision);
-  container.innerHTML = "";
-  question.divisions.forEach((division, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.value = division;
-    button.textContent = division;
-    button.classList.toggle("active", index === 0);
-    button.addEventListener("click", () => selectSegment(container, button));
-    container.appendChild(button);
-  });
+  const input = $(`#${prefix}-division`);
+  input.value = "";
+  input.title = "可留空；同一 Round 有多个组别时填写。1=Div. 1，2=Div. 2，3=Div. 3，4=Div. 4，12=Div. 1 + Div. 2，E=Educational";
 }
 
 function setSoloAnswerMode(mode) {
+  if (state.solo.scoringMode === "distance") mode = "contest";
   state.solo.answerMode = mode;
   $$('[data-answer-mode]').forEach(btn => btn.classList.toggle("active", btn.dataset.answerMode === mode));
   $("#solo-contest-fields").classList.toggle("hidden", mode !== "contest");
@@ -292,7 +327,7 @@ function answerPayload(prefix, mode) {
     contestAnswer: $(`#${prefix}-contest-answer`).value,
     roundNumber: $(`#${prefix}-round-number`).value,
     roundIndex: $(`#${prefix}-round-index`).value,
-    division: selectedValue(`#${prefix}-divisions`) || "",
+    division: $(`#${prefix}-division`).value,
   };
 }
 
@@ -679,9 +714,16 @@ function renderSoloResolution(payload, abandoned) {
   $("#solo-answer-form").classList.add("hidden");
   $("#abandon-solo").classList.add("hidden");
   const result = $("#solo-result");
-  result.className = `result-strip ${payload.correct ? "" : "wrong"}`;
+  const distanceScoring = payload.scoringMode === "distance";
+  result.className = `result-strip ${payload.correct || distanceScoring && payload.points > 0 ? "" : "wrong"}`;
   const headings = { timeout: "倒计时结束", attempts: "尝试次数已用完", abandoned: "已放弃此题" };
-  const heading = abandoned ? "已放弃此题" : (payload.correct ? `回答正确，+${payload.points} 分` : (headings[payload.terminalReason] || "没有命中"));
+  const heading = abandoned
+    ? "已放弃此题"
+    : payload.solutionWithheld
+      ? "未完全命中，结果不公开"
+    : distanceScoring
+      ? `本题 ${payload.points} 分 · 距离 ${payload.distance}`
+      : payload.correct ? `回答正确，+${payload.points} 分` : (headings[payload.terminalReason] || "没有命中");
   const detail = payload.solutionWithheld
     ? "<span>最强大脑题未命中，正确答案暂不公开。</span>"
     : `<span>${escapeHtml(payload.solution.title)} · ${payload.solution.rating}</span><br><span>${solutionText(payload.solution)}</span><br><a href="${escapeHtml(payload.solution.sourceUrl)}" target="_blank" rel="noreferrer">查看原题</a>`;
@@ -935,7 +977,10 @@ async function createRoom() {
         penaltyFirst: Number($("#battle-penalty-first").value),
         penaltySecond: Number($("#battle-penalty-second").value),
         penaltyRepeat: Number($("#battle-penalty-repeat").value),
-        filters: { difficulty: selectedValue("#battle-difficulty") || "medium" },
+        filters: {
+          difficulty: selectedValue("#battle-difficulty") || "medium",
+          questionMode: selectedValue("#battle-question-mode") || "standard",
+        },
       },
     });
     enterRoom(payload.code);
@@ -1014,7 +1059,8 @@ function setBattleAnswerMode(mode) {
 
 function renderBattle(match) {
   state.battle.current = match;
-  $("#room-mode").textContent = `${match.rated ? "Rating 模式" : "娱乐模式"} · ${match.scoringMode === "distance" ? "积分赛" : "抢答赛"}`;
+  const questionMode = match.questionMode === "open" ? "开放多解" : "普通题";
+  $("#room-mode").textContent = `${questionMode} · ${match.rated ? "Rating 模式" : "娱乐模式"} · ${match.scoringMode === "distance" ? "积分赛" : "抢答赛"}`;
   const penalties = match.rules.penalties;
   $("#battle-rules-summary").innerHTML = [
     `<span>每题 ${match.rules.roundSeconds} 秒</span>`,
@@ -1217,7 +1263,10 @@ function bindEvents() {
   $("#menu-btn").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
-  $$("#solo-difficulty button, #battle-mode button, #battle-difficulty button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#battle-mode button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#solo-difficulty button, #battle-difficulty button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBrainScoringCompatibility(); }));
+  $$("#solo-question-mode button, #battle-question-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateQuestionModeHints(); }));
+  $$("#solo-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloScoringControls(); }));
   $$("#battle-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBattleScoringControls(); }));
   $$("#battle-penalty-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateBattlePenaltyControls(); }));
   $$("#solo-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloModeControls(); }));

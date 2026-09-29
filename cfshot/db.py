@@ -86,6 +86,7 @@ def init_db():
             question_id INTEGER NOT NULL REFERENCES questions(id),
             difficulty TEXT NOT NULL,
             rated INTEGER NOT NULL DEFAULT 0,
+            scoring_mode TEXT NOT NULL DEFAULT 'classic',
             time_limit INTEGER NOT NULL DEFAULT 0,
             max_attempts INTEGER NOT NULL DEFAULT 1,
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -248,6 +249,7 @@ def init_db():
     _ensure_column(db, "submissions", "accepted_answers", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(db, "submissions", "verification_text", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(db, "quiz_rounds", "rated", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "quiz_rounds", "scoring_mode", "TEXT NOT NULL DEFAULT 'classic'")
     _ensure_column(db, "quiz_rounds", "time_limit", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "quiz_rounds", "max_attempts", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(db, "quiz_rounds", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
@@ -381,9 +383,13 @@ def parse_filters(raw):
     difficulty = raw.get("difficulty", "medium")
     if difficulty not in {"easy", "medium", "hard", "all", "brain"}:
         difficulty = "medium"
+    question_mode = raw.get("questionMode", "standard")
+    if question_mode not in {"standard", "open"}:
+        question_mode = "standard"
     allowed_round_types = {"Div. 1", "Div. 2", "Div. 3", "Div. 4", "Div. 1 + Div. 2", "Edu"}
     return {
         "difficulty": difficulty,
+        "questionMode": question_mode,
         "contestMin": _int_or_none(raw.get("contestMin")),
         "contestMax": _int_or_none(raw.get("contestMax")),
         "yearMin": _int_or_none(raw.get("yearMin")),
@@ -401,8 +407,8 @@ def _int_or_none(value):
 
 def matching_question_ids(filters, limit=100):
     filters = parse_filters(filters)
-    where = ["q.active=1", "q.unique_checked=1"]
-    params = []
+    where = ["q.active=1", "q.unique_checked=1", "q.open_mode=?"]
+    params = [int(filters["questionMode"] == "open")]
     if filters["difficulty"] == "brain":
         where.append("q.brain=1")
     elif filters["difficulty"] == "easy":

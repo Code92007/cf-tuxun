@@ -118,7 +118,7 @@ def distance_score(question_id, contest_id, problem_index, elapsed_seconds, time
         raise ValueError("这道题还没有可用于计分的标准答案")
     distance, contest_gap, index_gap, nearest = min(candidates, key=lambda item: item[0])
     accuracy = math.exp(-0.5 * (distance / DISTANCE_SIGMA) ** 2)
-    remaining_ratio = max(0.0, min(1.0, (time_limit - elapsed_seconds) / max(1, time_limit)))
+    remaining_ratio = 1.0 if time_limit <= 0 else max(0.0, min(1.0, (time_limit - elapsed_seconds) / time_limit))
     score = round(accuracy * (DISTANCE_ACCURACY_SCORE + DISTANCE_TIME_SCORE * math.sqrt(remaining_ratio)))
     if score < 5:
         score = 0
@@ -223,6 +223,8 @@ def rate_limited(key, limit=30, window=60):
 
 def normalize_division(value):
     raw = (value or "").lower().replace("division", "div").replace(".", "").replace(" ", "")
+    if raw in {"12", "1+2", "div12", "div1+2", "div1+div2"}:
+        return "Div. 1 + Div. 2"
     if raw in {"div1", "1"}:
         return "Div. 1"
     if raw in {"div2", "2"}:
@@ -231,7 +233,7 @@ def normalize_division(value):
         return "Div. 3"
     if raw in {"div4", "4"}:
         return "Div. 4"
-    if raw in {"edu", "educational"}:
+    if raw in {"e", "edu", "educational"}:
         return "Edu"
     return value or ""
 
@@ -255,14 +257,22 @@ def check_answer(question_id, payload):
     index = str(payload.get("roundIndex", "")).strip().upper()
     if not INDEX_RE.fullmatch(index):
         return False, f"Round {round_number} {index}", "题号应为 A、C 或 E2 这样的格式"
-    divisions = sorted({a["division"] for a in aliases if a["round_number"]})
     division = normalize_division(payload.get("division"))
-    if len(divisions) > 1 and not division:
-        return False, f"Round {round_number} {index}", "这是一道共享题，请选择 Div. 1 或 Div. 2"
+    valid_divisions = {"Div. 1", "Div. 2", "Div. 3", "Div. 4", "Div. 1 + Div. 2", "Edu"}
+    if division and division not in valid_divisions:
+        return False, f"Round {round_number} {division} {index}", "组别请输入 1、2、3、4、12 或 E"
+    round_divisions = {
+        row["division"] for row in get_db().execute(
+            "SELECT DISTINCT division FROM aliases WHERE round_number=? AND division!='Open'",
+            (round_number,),
+        )
+    }
+    if not division and len(round_divisions) > 1:
+        return False, f"Round {round_number} {index}", "这个 Round 有多个组别，请补填 1、2、3、4、12 或 E"
     correct = any(
         a["round_number"] == round_number
         and a["problem_index"].upper() == index
-        and (len(divisions) == 1 or a["division"] == division)
+        and (not division or a["division"] == division)
         for a in aliases
     )
     shown = f"Round {round_number} {division} {index}".replace("  ", " ").strip()
@@ -413,8 +423,8 @@ def question_public(question, token, difficulty):
         "token": token,
         "clueUrl": f"/api/clues/{token}",
         "difficulty": difficulty,
-        "needsDivision": len(divisions) > 1,
-        "divisions": divisions if len(divisions) > 1 else [],
+        "needsDivision": True,
+        "divisions": divisions,
         "timeLimit": ROUND_SECONDS,
         "openMode": bool(question["open_mode"]),
     }
@@ -1381,13 +1391,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         filters = parse_filters(payload.get("filters"))
         rated = bool(payload.get("rated"))
+        scoring_mode = str(payload.get("scoringMode", "classic"))
+        if scoring_mode not in {"classic", "distance"}:
+            return self.json(400, error="未知计分方式")
+        if scoring_mode == "distance" and filters["difficulty"] == "brain":
+            return self.json(400, error="最强大脑不支持距离积分，以免分数泄露答案范围")
         timed = rated or bool(payload.get("timed"))
         try:
             requested_time_limit = int(payload.get("timeLimit", RATED_SOLO_SECONDS))
         except (TypeError, ValueError):
             requested_time_limit = RATED_SOLO_SECONDS
         time_limit = RATED_SOLO_SECONDS if rated else min(600, max(30, requested_time_limit)) if timed else 0
-        max_attempts = QUIZ_MAX_ATTEMPTS if timed else 1
+        max_attempts = 1 if scoring_mode == "distance" else QUIZ_MAX_ATTEMPTS if timed else 1
         if rated:
             filters["difficulty"] = "all"
         candidates = matching_question_ids(filters, 5000)
@@ -1399,8 +1414,10 @@ class Handler(BaseHTTPRequestHandler):
                 SELECT MIN(a.contest_id) contest_min, MAX(a.contest_id) contest_max,
                     MIN(CAST(strftime('%Y',q.contest_time,'unixepoch') AS INTEGER)) year_min,
                     MAX(CAST(strftime('%Y',q.contest_time,'unixepoch') AS INTEGER)) year_max
-                FROM aliases a JOIN questions q ON q.id=a.question_id WHERE q.active=1
-                """
+                FROM aliases a JOIN questions q ON q.id=a.question_id
+                WHERE q.active=1 AND q.unique_checked=1 AND q.open_mode=?
+                """,
+                (int(filters["questionMode"] == "open"),),
             ).fetchone()
             contest_min = filters["contestMin"] if filters["contestMin"] is not None else ranges["contest_min"]
             contest_max = filters["contestMax"] if filters["contestMax"] is not None else ranges["contest_max"]
@@ -1418,10 +1435,11 @@ class Handler(BaseHTTPRequestHandler):
         db = get_db()
         db.execute(
             """
-            INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,rated,time_limit,max_attempts,started_at)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO quiz_rounds(
+                token,user_id,question_id,difficulty,rated,scoring_mode,time_limit,max_attempts,started_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             """,
-            (token, session["id"], qid, difficulty, int(rated), time_limit, max_attempts, now()),
+            (token, session["id"], qid, difficulty, int(rated), scoring_mode, time_limit, max_attempts, now()),
         )
         record_question_exposure(session["id"], qid, "solo", token)
         question = db.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
@@ -1431,6 +1449,7 @@ class Handler(BaseHTTPRequestHandler):
             "timeLimit": time_limit,
             "maxAttempts": max_attempts,
             "retrySeconds": QUIZ_RETRY_SECONDS,
+            "scoringMode": scoring_mode,
         })
         return self.json(question=public_question, rated=rated)
 
@@ -1469,6 +1488,20 @@ class Handler(BaseHTTPRequestHandler):
         if round_row["time_limit"] and elapsed >= round_row["time_limit"]:
             elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
             return self.finish_quiz_round(session, round_row, question, "超时", False, elapsed_ms, reason="timeout")
+        if round_row["scoring_mode"] == "distance":
+            if payload.get("answerMode", "contest") != "contest":
+                return self.json(400, error="距离积分请使用 Contest ID + 题号作答")
+            parsed = parse_contest_answer(payload.get("contestAnswer"))
+            if not parsed:
+                return self.json(400, error="请使用 2269E 这样的格式")
+            elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
+            score_result = distance_score(
+                question["id"], parsed[0], parsed[1], elapsed, round_row["time_limit"]
+            )
+            return self.finish_quiz_round(
+                session, round_row, question, f"{parsed[0]}{parsed[1]}", score_result["exact"],
+                elapsed_ms, count_attempt=True, reason="answered", score_result=score_result,
+            )
         if round_row["last_attempt_at"]:
             retry_after = QUIZ_RETRY_SECONDS - (now() - round_row["last_attempt_at"])
             if retry_after > 0:
@@ -1555,13 +1588,17 @@ class Handler(BaseHTTPRequestHandler):
         elapsed_ms = min(180_000, max(0, int(elapsed * 1000)))
         return self.finish_quiz_round(session, round_row, question, "超时", False, elapsed_ms, reason="timeout")
 
-    def finish_quiz_round(self, session, round_row, question, shown, correct, elapsed_ms, count_attempt=False, reason="answered"):
+    def finish_quiz_round(
+        self, session, round_row, question, shown, correct, elapsed_ms, count_attempt=False,
+        reason="answered", score_result=None,
+    ):
         db = get_db()
         user = db.execute("SELECT * FROM users WHERE id=?", (session["id"],)).fetchone()
         streak = user["streak"] + 1 if correct else 0
         multiplier = {"easy": 0.8, "medium": 1.0, "hard": 1.2, "brain": 1.5}.get(round_row["difficulty"], 1.0)
         base = max(150, 1000 - elapsed_ms // 45)
-        points = int((base + min(streak, 10) * 30) * multiplier) if correct else 0
+        brain_protected = bool(question["brain"] and score_result and not correct)
+        points = 0 if brain_protected else score_result["score"] if score_result else int((base + min(streak, 10) * 30) * multiplier) if correct else 0
         rating_delta = 0
         if round_row["rated"]:
             expected = 1 / (1 + 10 ** ((question["rating"] - user["rating"]) / 400))
@@ -1604,6 +1641,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.json(
             correct=correct,
             points=points,
+            scoringMode=round_row["scoring_mode"],
+            distance=score_result["distance"] if score_result and not brain_protected else None,
+            contestGap=score_result["contestGap"] if score_result and not brain_protected else None,
+            indexGap=score_result["indexGap"] if score_result and not brain_protected else None,
             rated=bool(round_row["rated"]),
             ratingDelta=rating_delta,
             settled=True,
@@ -1630,6 +1671,8 @@ class Handler(BaseHTTPRequestHandler):
         scoring_mode = str(payload.get("scoringMode", "classic"))
         if scoring_mode not in {"classic", "distance"}:
             return self.json(400, error="未知赛制")
+        if scoring_mode == "distance" and filters["difficulty"] == "brain":
+            return self.json(400, error="最强大脑不支持距离积分，以免分数泄露答案范围")
         candidates = matching_question_ids(filters, 100)
         if len(candidates) < min(rounds, 3):
             return self.json(400, error="这个筛选范围题目不足，请放宽条件")
@@ -1866,6 +1909,7 @@ class Handler(BaseHTTPRequestHandler):
             "phase": match["phase"],
             "rated": bool(match["rated"]),
             "scoringMode": match["scoring_mode"],
+            "questionMode": load_json(match["filters_json"], {}).get("questionMode", "standard"),
             "isHost": session["id"] == match["host_id"],
             "round": min(match["round_index"] + 1, match["rounds"]),
             "rounds": match["rounds"],
@@ -1902,8 +1946,8 @@ class Handler(BaseHTTPRequestHandler):
                 own_status = "abandoned" if own["abandoned"] else "correct" if own["correct"] else "scored" if match["scoring_mode"] == "distance" else "settled"
             payload.update({
                 "clueUrl": f'/api/matches/{match["code"]}/clue.svg?r={match["round_index"]}',
-                "needsDivision": len(divisions) > 1,
-                "divisions": divisions if len(divisions) > 1 else [],
+                "needsDivision": True,
+                "divisions": divisions,
                 "answered": own_status != "playing",
                 "ownStatus": own_status,
                 "attempts": own["attempt_count"] if own else 0,
@@ -1919,6 +1963,8 @@ class Handler(BaseHTTPRequestHandler):
                     (match["id"], match["round_index"]),
                 ).fetchall()
                 outcomes = {row["user_id"]: row for row in answers}
+                difficulty = load_json(match["filters_json"], {}).get("difficulty", "medium")
+                viewer_knows_solution = difficulty != "brain" or bool(own and own["correct"])
                 reveal_rows = []
                 for player in (host, guest):
                     if not player:
@@ -1941,10 +1987,9 @@ class Handler(BaseHTTPRequestHandler):
                         "status": status,
                         "attempts": outcome["attempt_count"] if outcome else 0,
                         "points": outcome["points"] if outcome else 0,
-                        "distance": outcome["distance"] if outcome else None,
-                        "answer": outcome["answer"] if outcome else None,
+                        "distance": outcome["distance"] if outcome and viewer_knows_solution else None,
+                        "answer": outcome["answer"] if outcome and viewer_knows_solution else None,
                     })
-                difficulty = load_json(match["filters_json"], {}).get("difficulty", "medium")
                 solution_withheld = difficulty == "brain" and not (own and own["correct"])
                 payload["reveal"] = {
                     "solution": None if solution_withheld else solution_for(question),
@@ -2067,6 +2112,8 @@ class Handler(BaseHTTPRequestHandler):
             result = distance_score(
                 question["id"], parsed[0], parsed[1], elapsed_seconds, match["round_seconds"]
             )
+            if question["brain"] and not result["exact"]:
+                result.update(score=0, distance=None, contestGap=None, indexGap=None)
             shown = f"{parsed[0]}{parsed[1]}"
             elapsed_ms = int(elapsed_seconds * 1000)
             try:

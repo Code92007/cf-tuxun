@@ -85,7 +85,7 @@ class AppTest(unittest.TestCase):
         return client, payload
 
     def test_registration_quiz_and_shared_aliases(self):
-        client, _ = self.register("quiz_user")
+        client, registered = self.register("quiz_user")
         status, config = client.request("GET", "/api/config")
         self.assertEqual(status, 200)
         self.assertGreaterEqual(config["questionCount"], 12)
@@ -110,6 +110,63 @@ class AppTest(unittest.TestCase):
         self.assertTrue(check_answer(shared["id"], {"answerMode": "contest", "contestAnswer": "2268C"})[0])
         self.assertTrue(check_answer(shared["id"], {"answerMode": "round", "roundNumber": 1124, "division": "Div. 2", "roundIndex": "E"})[0])
         self.assertTrue(check_answer(shared["id"], {"answerMode": "round", "roundNumber": 1124, "division": "Div. 1", "roundIndex": "C"})[0])
+        single = get_db().execute("SELECT id FROM questions WHERE canonical_key='2194A'").fetchone()
+        missing_division = check_answer(single["id"], {
+            "answerMode": "round", "roundNumber": 1078, "roundIndex": "A",
+        })
+        self.assertTrue(missing_division[0])
+        ambiguous_division = check_answer(shared["id"], {
+            "answerMode": "round", "roundNumber": 1124, "roundIndex": "E",
+        })
+        self.assertFalse(ambiguous_division[0])
+        self.assertIn("多个组别", ambiguous_division[2])
+        ambiguous_token = "ambiguous-round-token"
+        get_db().execute(
+            """
+            INSERT INTO quiz_rounds(
+                token,user_id,question_id,difficulty,time_limit,max_attempts,started_at
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (ambiguous_token, registered["user"]["id"], shared["id"], "medium", 120, 10, time.time()),
+        )
+        status, ambiguity = client.request("POST", "/api/quiz/answer", {
+            "token": ambiguous_token, "answerMode": "round", "roundNumber": 1124, "roundIndex": "E",
+        })
+        self.assertEqual(status, 400, ambiguity)
+        self.assertIn("多个组别", ambiguity["error"])
+        self.assertEqual(get_db().execute(
+            "SELECT attempt_count FROM quiz_rounds WHERE token=?", (ambiguous_token,)
+        ).fetchone()["attempt_count"], 0)
+        self.assertTrue(check_answer(single["id"], {
+            "answerMode": "round", "roundNumber": 1078, "division": "2", "roundIndex": "A",
+        })[0])
+        combined = get_db().execute(
+            "SELECT * FROM aliases WHERE division='Div. 1 + Div. 2' LIMIT 1"
+        ).fetchone()
+        self.assertTrue(check_answer(combined["question_id"], {
+            "answerMode": "round", "roundNumber": combined["round_number"],
+            "division": "12", "roundIndex": combined["problem_index"],
+        })[0])
+        combined_without_division = check_answer(combined["question_id"], {
+            "answerMode": "round", "roundNumber": combined["round_number"],
+            "roundIndex": combined["problem_index"],
+        })
+        round_divisions = {
+            row["division"] for row in get_db().execute(
+                "SELECT DISTINCT division FROM aliases WHERE round_number=?", (combined["round_number"],)
+            )
+        }
+        self.assertEqual(combined_without_division[0], len(round_divisions) == 1)
+        educational = get_db().execute("SELECT * FROM aliases WHERE division='Edu' LIMIT 1").fetchone()
+        self.assertTrue(check_answer(educational["question_id"], {
+            "answerMode": "round", "roundNumber": educational["round_number"],
+            "division": "e", "roundIndex": educational["problem_index"],
+        })[0])
+        invalid_division = check_answer(single["id"], {
+            "answerMode": "round", "roundNumber": 1078, "division": "5", "roundIndex": "A",
+        })
+        self.assertFalse(invalid_division[0])
+        self.assertIn("1、2、3、4、12 或 E", invalid_division[2])
 
     def test_two_player_room_flow(self):
         host, _ = self.register("room_host")
@@ -240,6 +297,52 @@ class AppTest(unittest.TestCase):
         self.assertIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1 + Div. 2"]}, 5000))
         self.assertNotIn(shared, matching_question_ids({"difficulty": "all", "roundTypes": ["Div. 1"]}, 5000))
 
+    def test_open_questions_are_isolated_from_standard_pools(self):
+        client, _ = self.register("pool_isolation_user")
+        db = get_db()
+        open_question_id = db.execute(
+            """
+            INSERT INTO questions(
+                canonical_key,title,clue,rating,contest_time,round_type,source_url,open_mode
+            ) VALUES(?,?,?,?,?,?,?,1)
+            """,
+            ("isolated-open-pool", "Open Pool", "A deliberate multi-answer clue", 1500, 1,
+             "Div. 2", "https://codeforces.com/contest/2399/problem/A"),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
+            (open_question_id, 2399, "A", 1, "Div. 2"),
+        )
+
+        parsed = parse_filters({"difficulty": "all", "questionMode": "invalid"})
+        self.assertEqual(parsed["questionMode"], "standard")
+        self.assertNotIn(open_question_id, matching_question_ids({"difficulty": "all"}, 5000))
+        self.assertIn(open_question_id, matching_question_ids({
+            "difficulty": "all", "questionMode": "open",
+        }, 5000))
+
+        status, standard = client.request("POST", "/api/quiz/next", {
+            "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, standard)
+        standard_id = db.execute(
+            "SELECT question_id FROM quiz_rounds WHERE token=?", (standard["question"]["token"],)
+        ).fetchone()["question_id"]
+        self.assertEqual(db.execute(
+            "SELECT open_mode FROM questions WHERE id=?", (standard_id,)
+        ).fetchone()["open_mode"], 0)
+
+        status, opened = client.request("POST", "/api/quiz/next", {
+            "filters": {"difficulty": "medium", "questionMode": "open"},
+        })
+        self.assertEqual(status, 200, opened)
+        opened_id = db.execute(
+            "SELECT question_id FROM quiz_rounds WHERE token=?", (opened["question"]["token"],)
+        ).fetchone()["question_id"]
+        self.assertEqual(db.execute(
+            "SELECT open_mode FROM questions WHERE id=?", (opened_id,)
+        ).fetchone()["open_mode"], 1)
+
     def test_players_can_leave_waiting_rooms(self):
         host, _ = self.register("leave_host")
         guest, _ = self.register("leave_guest")
@@ -301,6 +404,40 @@ class AppTest(unittest.TestCase):
         self.assertEqual(status, 200, abandoned)
         self.assertTrue(abandoned["solutionWithheld"])
         self.assertIsNone(abandoned["solution"])
+
+        status, rejected = client.request("POST", "/api/quiz/next", {
+            "scoringMode": "distance", "filters": {"difficulty": "brain"},
+        })
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("不支持距离积分", rejected["error"])
+        status, rejected = client.request("POST", "/api/matches", {
+            "scoringMode": "distance", "rounds": 3, "filters": {"difficulty": "brain"},
+        })
+        self.assertEqual(status, 400, rejected)
+
+        brain_question_id = get_db().execute(
+            "SELECT question_id FROM quiz_rounds WHERE token=?", (brain["question"]["token"],)
+        ).fetchone()["question_id"]
+        protected_token = "legacy-brain-distance"
+        get_db().execute(
+            """
+            INSERT INTO quiz_rounds(
+                token,user_id,question_id,difficulty,scoring_mode,time_limit,max_attempts,started_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (protected_token, registered["user"]["id"], brain_question_id, "brain", "distance", 120, 1, time.time()),
+        )
+        status, protected = client.request("POST", "/api/quiz/answer", {
+            "token": protected_token, "answerMode": "contest", "contestAnswer": "1A",
+        })
+        self.assertEqual(status, 200, protected)
+        self.assertFalse(protected["correct"])
+        self.assertEqual(protected["points"], 0)
+        self.assertIsNone(protected["distance"])
+        self.assertIsNone(protected["contestGap"])
+        self.assertIsNone(protected["indexGap"])
+        self.assertTrue(protected["solutionWithheld"])
+        self.assertIsNone(protected["solution"])
 
         tiny_png = base64.b64encode(
             b"\x89PNG\r\n\x1a\n" + b"review-test-image"
@@ -456,13 +593,47 @@ class AppTest(unittest.TestCase):
         question_id = get_db().execute("SELECT id FROM questions WHERE canonical_key='2268C'").fetchone()["id"]
         exact_slow = distance_score(question_id, 2269, "E", 115, 120)
         exact_fast = distance_score(question_id, 2269, "E", 1, 120)
+        exact_untimed = distance_score(question_id, 2269, "E", 3600, 0)
         nearby = distance_score(question_id, 2268, "D", 1, 120)
         far = distance_score(question_id, 100, "A", 1, 120)
         self.assertGreater(exact_fast["score"], exact_slow["score"])
         self.assertGreater(exact_slow["score"], nearby["score"])
         self.assertGreater(nearby["score"], far["score"])
         self.assertLessEqual(exact_fast["score"], 5000)
+        self.assertEqual(exact_untimed["score"], 5000)
         self.assertEqual(far["score"], 0)
+
+    def test_solo_distance_mode_scores_and_locks_one_answer(self):
+        client, _ = self.register("solo_distance_user")
+        status, started = client.request("POST", "/api/quiz/next", {
+            "scoringMode": "distance",
+            "timed": True,
+            "timeLimit": 120,
+            "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, started)
+        self.assertEqual(started["question"]["scoringMode"], "distance")
+        self.assertEqual(started["question"]["maxAttempts"], 1)
+        token = started["question"]["token"]
+        question_id = get_db().execute(
+            "SELECT question_id FROM quiz_rounds WHERE token=?", (token,)
+        ).fetchone()["question_id"]
+        alias = get_db().execute(
+            "SELECT * FROM aliases WHERE question_id=? ORDER BY id LIMIT 1", (question_id,)
+        ).fetchone()
+        answer = f'{alias["contest_id"]}{alias["problem_index"]}'
+        status, scored = client.request("POST", "/api/quiz/answer", {
+            "token": token, "answerMode": "contest", "contestAnswer": answer,
+        })
+        self.assertEqual(status, 200, scored)
+        self.assertEqual(scored["scoringMode"], "distance")
+        self.assertTrue(scored["settled"])
+        self.assertTrue(scored["correct"])
+        self.assertGreater(scored["points"], 4500)
+        self.assertEqual(scored["distance"], 0)
+        self.assertEqual(client.request("POST", "/api/quiz/answer", {
+            "token": token, "answerMode": "contest", "contestAnswer": answer,
+        })[0], 409)
 
     def test_distance_battle_locks_one_guess_and_compares_total_scores(self):
         host, _ = self.register("distance_host")

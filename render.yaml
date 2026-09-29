@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: cf-snap
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "1"
+    disk:
+      name: cf-snap-data
+      mountPath: /data
+      sizeGB: 1
+

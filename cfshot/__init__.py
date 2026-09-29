@@ -1,0 +1,2 @@
+"""CF Snap application package."""
+

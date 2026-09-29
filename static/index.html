@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
+  <title>CF Snap - Codeforces 图寻</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main id="auth-screen" class="auth-shell">
+    <section class="auth-brand" aria-labelledby="auth-title">
+      <div class="brand-mark" aria-hidden="true">CF</div>
+      <div>
+        <p class="kicker">CODEFORCES SCREENSHOT QUIZ</p>
+        <h1 id="auth-title">CF Snap</h1>
+        <p class="auth-copy">看题面，认题号。记录每一次命中，也可以拉一个熟悉题库的朋友来抢答。</p>
+      </div>
+      <dl class="auth-stats">
+        <div><dt>答题格式</dt><dd>2269E</dd></div>
+        <div><dt>共享题</dt><dd>双向判定</dd></div>
+        <div><dt>对战</dt><dd>Elo rating</dd></div>
+      </dl>
+    </section>
+
+    <section class="auth-panel" aria-label="账户">
+      <div class="auth-tabs" role="tablist">
+        <button class="auth-tab active" type="button" data-auth-mode="login" role="tab">登录</button>
+        <button class="auth-tab" type="button" data-auth-mode="register" role="tab">注册</button>
+      </div>
+      <form id="auth-form" class="stack-form">
+        <label>用户名
+          <input id="auth-username" name="username" autocomplete="username" minlength="3" maxlength="20" required placeholder="Codeforces handle">
+        </label>
+        <label>密码
+          <input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required placeholder="至少 8 位">
+        </label>
+        <p id="auth-hint" class="form-hint">登录后才能累计得分和 rating。</p>
+        <button id="auth-submit" class="primary wide" type="submit">登录</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="app-shell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="side-brand"><span class="brand-mark small">CF</span><span>CF Snap</span></div>
+      <nav class="side-nav" aria-label="主导航">
+        <button class="nav-item active" data-view="dashboard" type="button"><span aria-hidden="true">⌂</span>概览</button>
+        <button class="nav-item" data-view="solo" type="button"><span aria-hidden="true">◎</span>单人图寻</button>
+        <button class="nav-item" data-view="battle" type="button"><span aria-hidden="true">⚔</span>双人对战</button>
+        <button class="nav-item" data-view="leaderboard" type="button"><span aria-hidden="true">▥</span>排行榜</button>
+      </nav>
+      <div class="side-account">
+        <div class="avatar" id="side-avatar">U</div>
+        <div class="account-copy"><strong id="side-username">user</strong><span><b id="side-rating">1200</b> rating</span></div>
+        <button id="logout-btn" class="icon-btn" type="button" title="退出登录" aria-label="退出登录">↪</button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-btn" class="icon-btn mobile-only" type="button" aria-label="打开菜单">☰</button>
+        <div><p class="kicker" id="page-eyebrow">OVERVIEW</p><h2 id="page-title">今天也来认几道题</h2></div>
+        <div class="top-score"><span>总积分</span><strong id="top-score">0</strong></div>
+      </header>
+
+      <main class="content">
+        <section id="view-dashboard" class="view active">
+          <div class="metric-strip">
+            <article><span>图寻积分</span><strong id="metric-score">0</strong><small>累计</small></article>
+            <article><span>当前 Rating</span><strong id="metric-rating">1200</strong><small id="rating-tier">Pupil</small></article>
+            <article><span>正确率</span><strong id="metric-accuracy">0%</strong><small id="metric-attempts">0 次作答</small></article>
+            <article><span>最佳连对</span><strong id="metric-streak">0</strong><small>连续命中</small></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="action-band solo-band">
+              <div><p class="kicker">SOLO</p><h3>单人图寻</h3><p>按难度、场次编号和年份筛选题库，训练你的题面记忆。</p></div>
+              <button class="primary" data-go="solo" type="button">开始一局</button>
+            </section>
+            <section class="action-band battle-band">
+              <div><p class="kicker">VERSUS</p><h3>双人抢答</h3><p>创建 6 位房间码，首个正确答案获得更高分。</p></div>
+              <button class="secondary" data-go="battle" type="button">创建对战</button>
+            </section>
+          </div>
+
+          <section class="section-block">
+            <div class="section-head"><div><p class="kicker">HOW TO ANSWER</p><h3>两种写法都算对</h3></div></div>
+            <div class="answer-examples">
+              <div><code>2269E</code><span>Contest ID + 题号</span></div>
+              <span class="equals">=</span>
+              <div><code>Round 1124 · Div. 2 · E</code><span>Round + 组别 + 题号</span></div>
+              <span class="equals">=</span>
+              <div><code>2268C</code><span>同场共享题也接受</span></div>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-solo" class="view">
+          <div id="solo-setup" class="setup-layout">
+            <section class="setup-main">
+              <p class="kicker">QUESTION POOL</p>
+              <h3>选择本局范围</h3>
+              <div class="field-group">
+                <span class="field-label">难度</span>
+                <div class="segmented" id="solo-difficulty">
+                  <button type="button" data-value="easy">简单 <small>≤1200</small></button>
+                  <button class="active" type="button" data-value="medium">中等 <small>1300-1900</small></button>
+                  <button type="button" data-value="hard">困难 <small>≥2000</small></button>
+                  <button type="button" data-value="all">混合</button>
+                </div>
+              </div>
+              <div class="two-cols">
+                <label>最小 Contest ID<input id="solo-contest-min" type="number" min="1" placeholder="例如 2000"></label>
+                <label>最大 Contest ID<input id="solo-contest-max" type="number" min="1" placeholder="不限制"></label>
+                <label>起始年份<input id="solo-year-min" type="number" min="2010" max="2100" placeholder="例如 2022"></label>
+                <label>结束年份<input id="solo-year-max" type="number" min="2010" max="2100" placeholder="不限制"></label>
+              </div>
+              <fieldset class="round-filter">
+                <legend>场次类型</legend>
+                <label><input type="checkbox" value="Div. 1"> Div. 1</label>
+                <label><input type="checkbox" value="Div. 2"> Div. 2</label>
+                <label><input type="checkbox" value="Div. 3"> Div. 3</label>
+                <label><input type="checkbox" value="Edu"> Educational</label>
+              </fieldset>
+              <button id="solo-start" class="primary" type="button">开始图寻</button>
+            </section>
+            <aside class="setup-note">
+              <span class="note-index">01</span><h4>判题说明</h4>
+              <p>题面标题、题号与场次信息会被隐藏。所有入库线索均经过长度与重复检查。</p>
+              <p>共享题可回答任意一套 Contest ID；使用 Round 写法时需要选择 Div.</p>
+            </aside>
+          </div>
+
+          <section id="solo-game" class="game-layout hidden">
+            <div class="game-head">
+              <div class="game-progress"><span id="solo-round-label">第 1 题</span><div><i id="solo-progress"></i></div></div>
+              <div class="timer"><span>用时</span><strong id="solo-timer">00:00</strong></div>
+            </div>
+            <figure class="clue-frame"><img id="solo-clue" alt="隐藏标题和题号的 Codeforces 题面截图"></figure>
+            <section class="answer-panel">
+              <div class="answer-mode segmented compact">
+                <button class="active" data-answer-mode="contest" type="button">Contest 写法</button>
+                <button data-answer-mode="round" type="button">Round 写法</button>
+              </div>
+              <form id="solo-answer-form" class="answer-form">
+                <div id="solo-contest-fields" class="answer-fields one-field">
+                  <label><span>你的答案</span><input id="solo-contest-answer" autocomplete="off" placeholder="2269E" maxlength="10"></label>
+                </div>
+                <div id="solo-round-fields" class="answer-fields hidden">
+                  <label><span>Round</span><input id="solo-round-number" type="number" min="1" placeholder="1124"></label>
+                  <div id="solo-division-wrap" class="division-choice hidden"><span>组别</span><div id="solo-divisions" class="segmented compact"></div></div>
+                  <label><span>题号</span><input id="solo-round-index" maxlength="2" placeholder="E"></label>
+                </div>
+                <button class="primary submit-answer" type="submit">提交答案</button>
+              </form>
+              <div id="solo-result" class="result-strip hidden"></div>
+            </section>
+          </section>
+        </section>
+
+        <section id="view-battle" class="view">
+          <div id="battle-setup" class="battle-setup">
+            <section class="battle-create">
+              <p class="kicker">CREATE ROOM</p><h3>发起一场对战</h3>
+              <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
+              <div class="field-group"><span class="field-label">题目难度</span><div class="segmented" id="battle-difficulty"><button type="button" data-value="easy">简单</button><button class="active" type="button" data-value="medium">中等</button><button type="button" data-value="hard">困难</button><button type="button" data-value="all">混合</button></div></div>
+              <label>题目数量<select id="battle-rounds"><option value="3">3 题</option><option value="5" selected>5 题</option><option value="7">7 题</option></select></label>
+              <button id="create-room" class="primary" type="button">创建房间</button>
+            </section>
+            <section class="battle-join">
+              <p class="kicker">JOIN ROOM</p><h3>输入房间码</h3>
+              <p>房间码由 6 位字母和数字组成。</p>
+              <div class="join-line"><input id="join-code" maxlength="6" autocomplete="off" placeholder="ABC123"><button id="join-room" class="secondary" type="button">加入</button></div>
+              <div class="rating-rule"><strong>Elo 规则</strong><span>新玩家 K=40，完成 10 场后 K=24；平局按 0.5 计算。</span></div>
+            </section>
+          </div>
+
+          <section id="battle-room" class="battle-room hidden">
+            <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><span id="room-mode" class="mode-badge">娱乐模式</span></header>
+            <div id="lobby-state" class="lobby-state">
+              <div id="battle-players" class="player-versus"></div>
+              <p id="lobby-message">等待另一位玩家加入...</p>
+              <button id="start-battle" class="primary hidden" type="button">开始对战</button>
+            </div>
+            <div id="battle-game" class="game-layout hidden">
+              <div class="game-head"><div class="game-progress"><span id="battle-round-label">第 1 / 5 题</span><div><i id="battle-progress"></i></div></div><div class="timer"><span>剩余</span><strong id="battle-timer">30s</strong></div></div>
+              <div id="battle-scoreboard" class="scoreboard"></div>
+              <figure class="clue-frame"><img id="battle-clue" alt="对战题面截图"></figure>
+              <section class="answer-panel">
+                <div class="answer-mode segmented compact"><button class="active" data-battle-answer-mode="contest" type="button">Contest 写法</button><button data-battle-answer-mode="round" type="button">Round 写法</button></div>
+                <form id="battle-answer-form" class="answer-form">
+                  <div id="battle-contest-fields" class="answer-fields one-field"><label><span>你的答案</span><input id="battle-contest-answer" autocomplete="off" placeholder="2269E" maxlength="10"></label></div>
+                  <div id="battle-round-fields" class="answer-fields hidden"><label><span>Round</span><input id="battle-round-number" type="number" min="1" placeholder="1124"></label><div id="battle-division-wrap" class="division-choice hidden"><span>组别</span><div id="battle-divisions" class="segmented compact"></div></div><label><span>题号</span><input id="battle-round-index" maxlength="2" placeholder="E"></label></div>
+                  <button class="primary submit-answer" type="submit">抢答</button>
+                </form>
+                <div id="battle-result" class="result-strip hidden"></div>
+              </section>
+            </div>
+          </section>
+        </section>
+
+        <section id="view-leaderboard" class="view">
+          <section class="section-block leaderboard-block">
+            <div class="section-head"><div><p class="kicker">GLOBAL RANKING</p><h3>Rating 排行榜</h3></div><button id="refresh-board" class="text-btn" type="button">刷新</button></div>
+            <div class="table-wrap"><table><thead><tr><th>排名</th><th>玩家</th><th>Rating</th><th>对战</th><th>胜场</th><th>图寻积分</th></tr></thead><tbody id="leaderboard-body"></tbody></table></div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

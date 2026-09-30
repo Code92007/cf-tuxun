@@ -141,6 +141,7 @@ def init_db():
             penalty_second INTEGER NOT NULL DEFAULT 5,
             penalty_repeat INTEGER NOT NULL DEFAULT 10,
             scoring_mode TEXT NOT NULL DEFAULT 'classic',
+            unlimited INTEGER NOT NULL DEFAULT 0,
             rated_applied INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
         );
@@ -262,6 +263,7 @@ def init_db():
     _ensure_column(db, "matches", "penalty_second", "INTEGER NOT NULL DEFAULT 5")
     _ensure_column(db, "matches", "penalty_repeat", "INTEGER NOT NULL DEFAULT 10")
     _ensure_column(db, "matches", "scoring_mode", "TEXT NOT NULL DEFAULT 'classic'")
+    _ensure_column(db, "matches", "unlimited", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "match_answers", "settled", "INTEGER NOT NULL DEFAULT 1")
     _ensure_column(db, "match_answers", "abandoned", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(db, "match_answers", "pending_review", "INTEGER NOT NULL DEFAULT 0")

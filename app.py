@@ -16,13 +16,11 @@ import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from html.parser import HTMLParser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
 
 from cfshot.db import (
     aliases_for,
@@ -61,8 +59,6 @@ IMAGE_FORMATS = {
     "image/jpeg": (".jpg", b"\xff\xd8\xff"),
     "image/webp": (".webp", b"RIFF"),
 }
-OPEN_MATCH_THRESHOLD = 0.9
-OPEN_VERIFY_TIMEOUT = 6
 DISTANCE_MAX_SCORE = 5000
 DISTANCE_ACCURACY_SCORE = 4500
 DISTANCE_TIME_SCORE = 500
@@ -279,57 +275,6 @@ def check_answer(question_id, payload):
     return correct, shown, None
 
 
-class ProblemTextExtractor(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts = []
-        self.skipped = 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in {"script", "style", "noscript"}:
-            self.skipped += 1
-
-    def handle_endtag(self, tag):
-        if tag in {"script", "style", "noscript"} and self.skipped:
-            self.skipped -= 1
-
-    def handle_data(self, data):
-        if not self.skipped:
-            self.parts.append(data)
-
-
-def normalize_problem_text(value):
-    return " ".join(re.findall(r"[a-z0-9]+", str(value).lower()))
-
-
-def problem_text_similarity(reference, candidate):
-    reference_tokens = normalize_problem_text(reference).split()
-    candidate_tokens = normalize_problem_text(candidate).split()
-    if len(reference_tokens) < 12 or len(candidate_tokens) < 12:
-        return 0.0
-    reference_text = " ".join(reference_tokens)
-    candidate_text = " ".join(candidate_tokens)
-    if reference_text in candidate_text:
-        return 1.0
-    size = 5 if len(reference_tokens) >= 20 else 3
-    reference_shingles = {tuple(reference_tokens[i:i + size]) for i in range(len(reference_tokens) - size + 1)}
-    candidate_shingles = {tuple(candidate_tokens[i:i + size]) for i in range(len(candidate_tokens) - size + 1)}
-    return len(reference_shingles & candidate_shingles) / max(1, len(reference_shingles))
-
-
-def fetch_codeforces_problem_text(contest_id, problem_index):
-    url = f"https://codeforces.com/contest/{contest_id}/problem/{problem_index}"
-    request = Request(url, headers={"User-Agent": "CF-Snap/1.0 (+https://cf-tuxun.wannafly.cn)"})
-    with urlopen(request, timeout=OPEN_VERIFY_TIMEOUT) as response:
-        data = response.read(2 * 1024 * 1024 + 1)
-        if len(data) > 2 * 1024 * 1024:
-            raise ValueError("题面页面过大")
-        charset = response.headers.get_content_charset() or "utf-8"
-    parser = ProblemTextExtractor()
-    parser.feed(data.decode(charset, errors="replace"))
-    return " ".join(parser.parts)
-
-
 def parse_contest_answers(value, limit=20):
     answers = []
     for raw in re.split(r"[,，;；\s]+", str(value or "")):
@@ -344,60 +289,6 @@ def parse_contest_answers(value, limit=20):
         if len(answers) > limit:
             raise ValueError(f"最多填写 {limit} 个题号")
     return answers
-
-
-def resolve_open_answer(question, user_id, payload):
-    if not question["open_mode"] or payload.get("answerMode", "contest") != "contest":
-        return None
-    match = CONTEST_ANSWER_RE.fullmatch(str(payload.get("contestAnswer", "")))
-    if not match:
-        return None
-    contest_id, problem_index = int(match.group(1)), match.group(2).upper()
-    shown = f"{contest_id}{problem_index}"
-    db = get_db()
-    existing = db.execute(
-        """
-        SELECT * FROM open_answer_candidates
-        WHERE question_id=? AND contest_id=? AND problem_index=?
-        """,
-        (question["id"], contest_id, problem_index),
-    ).fetchone()
-    if existing:
-        db.execute("UPDATE open_answer_candidates SET hit_count=hit_count+1 WHERE id=?", (existing["id"],))
-        if existing["status"] in {"approved", "auto_approved"}:
-            db.execute(
-                "INSERT OR IGNORE INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
-                (question["id"], contest_id, problem_index, 0, "Open"),
-            )
-            return {"status": "correct", "shown": shown, "similarity": existing["similarity"]}
-        if existing["status"] == "pending":
-            return {"status": "pending", "shown": shown, "candidateId": existing["id"]}
-        return None
-
-    similarity = 0.0
-    verification_text = question["verification_text"].strip()
-    if verification_text:
-        try:
-            candidate_text = fetch_codeforces_problem_text(contest_id, problem_index)
-            similarity = problem_text_similarity(verification_text, candidate_text)
-        except Exception:
-            similarity = 0.0
-    status = "auto_approved" if similarity >= OPEN_MATCH_THRESHOLD else "pending"
-    cursor = db.execute(
-        """
-        INSERT INTO open_answer_candidates(
-            question_id,requester_id,contest_id,problem_index,status,similarity,created_at
-        ) VALUES(?,?,?,?,?,?,?)
-        """,
-        (question["id"], user_id, contest_id, problem_index, status, similarity, int(now())),
-    )
-    if status == "auto_approved":
-        db.execute(
-            "INSERT OR IGNORE INTO aliases(question_id,contest_id,problem_index,round_number,division) VALUES(?,?,?,?,?)",
-            (question["id"], contest_id, problem_index, 0, "Open"),
-        )
-        return {"status": "correct", "shown": shown, "similarity": similarity}
-    return {"status": "pending", "shown": shown, "candidateId": cursor.lastrowid}
 
 
 def solution_for(question):
@@ -692,6 +583,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.join_match(payload)
         if path.startswith("/api/matches/") and path.endswith("/start"):
             return self.start_match(path, payload)
+        if path.startswith("/api/matches/") and path.endswith("/finish"):
+            return self.finish_match(path, payload)
         if path.startswith("/api/matches/") and path.endswith("/leave"):
             return self.leave_match(path, payload)
         if path.startswith("/api/matches/") and path.endswith("/abandon"):
@@ -1517,24 +1410,6 @@ class Handler(BaseHTTPRequestHandler):
         correct, shown, error = check_answer(question["id"], payload)
         if error:
             return self.json(400, error=error)
-        if not correct:
-            open_resolution = resolve_open_answer(question, session["id"], payload)
-            if open_resolution and open_resolution["status"] == "correct":
-                correct, shown = True, open_resolution["shown"]
-            elif open_resolution and open_resolution["status"] == "pending":
-                db.execute(
-                    "UPDATE quiz_rounds SET last_attempt_at=? WHERE token=? AND answered_at IS NULL",
-                    (now(), round_row["token"]),
-                )
-                return self.json(
-                    correct=False,
-                    settled=False,
-                    pendingReview=True,
-                    candidateId=open_resolution["candidateId"],
-                    attemptsUsed=round_row["attempt_count"],
-                    attemptsLeft=max(1, round_row["max_attempts"] - round_row["attempt_count"]),
-                    retryAfter=QUIZ_RETRY_SECONDS,
-                )
         elapsed_ms = min(180_000, max(0, int((now() - round_row["started_at"]) * 1000)))
         next_attempt_count = round_row["attempt_count"] + 1
         if not correct and round_row["time_limit"] and next_attempt_count < round_row["max_attempts"]:
@@ -1669,7 +1544,12 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             return
         filters = parse_filters(payload.get("filters"))
-        rounds = min(10, max(3, int(payload.get("rounds", 5))))
+        try:
+            requested_rounds = int(payload.get("rounds", 5))
+        except (TypeError, ValueError):
+            requested_rounds = 5
+        unlimited = requested_rounds == 0
+        rounds = 0 if unlimited else min(20, max(3, requested_rounds))
         round_seconds = bounded_int(payload.get("roundSeconds"), ROUND_SECONDS, 20, 300)
         abandon_seconds = bounded_int(payload.get("abandonSeconds"), 20, 5, 60)
         penalty_enabled = int(bool(payload.get("penaltyEnabled", True)))
@@ -1683,8 +1563,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(400, error="开放多解只支持传统对错")
         if scoring_mode == "distance" and filters["difficulty"] == "brain":
             return self.json(400, error="最强大脑不支持距离积分，以免分数泄露答案范围")
-        candidates = matching_question_ids(filters, 100)
-        if len(candidates) < min(rounds, 3):
+        rated = bool(payload.get("rated"))
+        if unlimited and rated:
+            return self.json(400, error="无限题对战仅支持娱乐模式")
+        candidates = matching_question_ids(filters, 5000)
+        required = 1 if unlimited else min(rounds, 3)
+        if len(candidates) < required:
             return self.json(400, error="这个筛选范围题目不足，请放宽条件")
         db = get_db()
         for _ in range(8):
@@ -1694,13 +1578,14 @@ class Handler(BaseHTTPRequestHandler):
                     """
                     INSERT INTO matches(
                         code,host_id,rated,filters_json,rounds,round_seconds,abandon_seconds,
-                        penalty_enabled,penalty_first,penalty_second,penalty_repeat,scoring_mode,created_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        penalty_enabled,penalty_first,penalty_second,penalty_repeat,scoring_mode,
+                        unlimited,created_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        code, session["id"], int(bool(payload.get("rated"))), dump_json(filters), rounds,
+                        code, session["id"], int(rated), dump_json(filters), rounds,
                         round_seconds, abandon_seconds, penalty_enabled, penalty_first, penalty_second,
-                        penalty_repeat, scoring_mode, int(now()),
+                        penalty_repeat, scoring_mode, int(unlimited), int(now()),
                     ),
                 )
                 return self.json(code=code)
@@ -1748,11 +1633,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(409, error="等待另一位玩家加入")
         if match["status"] != "waiting":
             return self.json(409, error="对战已经开始")
-        candidates = matching_question_ids(load_json(match["filters_json"], {}), 100)
-        if len(candidates) < min(match["rounds"], 3):
+        candidates = matching_question_ids(load_json(match["filters_json"], {}), 5000)
+        required = 1 if match["unlimited"] else min(match["rounds"], 3)
+        if len(candidates) < required:
             return self.json(409, error="题库不足，请重建房间并放宽筛选")
         selected = select_fresh_questions(
-            candidates, min(match["rounds"], len(candidates)), [match["host_id"], match["guest_id"]]
+            candidates,
+            1 if match["unlimited"] else min(match["rounds"], len(candidates)),
+            [match["host_id"], match["guest_id"]],
         )
         started_at = now()
         db = get_db()
@@ -1761,10 +1649,35 @@ class Handler(BaseHTTPRequestHandler):
             UPDATE matches SET status='active',phase='playing',question_ids_json=?,rounds=?,
                 round_index=0,phase_started_at=?,round_deadline=? WHERE id=? AND status='waiting'
             """,
-            (dump_json(selected), len(selected), started_at, started_at + match["round_seconds"], match["id"]),
+            (
+                dump_json(selected), 0 if match["unlimited"] else len(selected),
+                started_at, started_at + match["round_seconds"], match["id"],
+            ),
         )
         started = db.execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
         self.record_match_round_exposures(started)
+        return self.json(ok=True)
+
+    def finish_match(self, path, payload):
+        session = self.require_user(csrf=True)
+        if not session:
+            return
+        match = self.match_from_path(path, "/finish")
+        if not match:
+            return self.json(404, error="房间不存在")
+        if match["host_id"] != session["id"]:
+            return self.json(403, error="只有房主可以结束对战")
+        if not match["unlimited"]:
+            return self.json(409, error="固定题数对战会在最后一题后自动结算")
+        if match["rated"]:
+            return self.json(409, error="Rating 对战不能提前结束")
+        if match["status"] != "active":
+            return self.json(409, error="当前对战不能结束")
+        get_db().execute(
+            "UPDATE matches SET status='finished',phase='finished' WHERE id=? AND status='active'",
+            (match["id"],),
+        )
+        self.apply_match_result(match["id"])
         return self.json(ok=True)
 
     def leave_match(self, path, payload):
@@ -1820,20 +1733,45 @@ class Handler(BaseHTTPRequestHandler):
             self.settle_match_round_exposures(match)
             db.execute("UPDATE matches SET phase='reveal',phase_started_at=? WHERE id=?", (now(), match["id"]))
         elif match["phase"] == "reveal" and elapsed >= REVEAL_SECONDS:
-            if match["round_index"] + 1 >= match["rounds"]:
-                db.execute("UPDATE matches SET status='finished',phase='finished' WHERE id=?", (match["id"],))
-                self.apply_match_result(match["id"])
-            else:
-                started_at = now()
+            if not match["unlimited"] and match["round_index"] + 1 >= match["rounds"]:
                 db.execute(
                     """
-                    UPDATE matches SET round_index=round_index+1,phase='playing',phase_started_at=?,round_deadline=?
-                    WHERE id=?
+                    UPDATE matches SET status='finished',phase='finished'
+                    WHERE id=? AND status='active' AND phase='reveal' AND round_index=?
                     """,
-                    (started_at, started_at + match["round_seconds"], match["id"]),
+                    (match["id"], match["round_index"]),
                 )
-                next_round = db.execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
-                self.record_match_round_exposures(next_round)
+                self.apply_match_result(match["id"])
+            else:
+                question_ids = load_json(match["question_ids_json"], [])
+                if match["unlimited"]:
+                    candidates = matching_question_ids(load_json(match["filters_json"], {}), 5000)
+                    selected = select_fresh_questions(
+                        candidates, 1, [match["host_id"], match["guest_id"]]
+                    )
+                    if not selected:
+                        db.execute(
+                            "UPDATE matches SET status='finished',phase='finished' WHERE id=?",
+                            (match["id"],),
+                        )
+                        self.apply_match_result(match["id"])
+                        return db.execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
+                    question_ids.append(selected[0])
+                started_at = now()
+                changed = db.execute(
+                    """
+                    UPDATE matches SET question_ids_json=?,round_index=round_index+1,phase='playing',
+                        phase_started_at=?,round_deadline=?
+                    WHERE id=? AND status='active' AND phase='reveal' AND round_index=?
+                    """,
+                    (
+                        dump_json(question_ids), started_at, started_at + match["round_seconds"],
+                        match["id"], match["round_index"],
+                    ),
+                ).rowcount
+                if changed:
+                    next_round = db.execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
+                    self.record_match_round_exposures(next_round)
         return db.execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
 
     def record_match_round_exposures(self, match):
@@ -1921,8 +1859,9 @@ class Handler(BaseHTTPRequestHandler):
             "scoringMode": match["scoring_mode"],
             "questionMode": load_json(match["filters_json"], {}).get("questionMode", "standard"),
             "isHost": session["id"] == match["host_id"],
-            "round": min(match["round_index"] + 1, match["rounds"]),
+            "round": match["round_index"] + 1 if match["unlimited"] else min(match["round_index"] + 1, match["rounds"]),
             "rounds": match["rounds"],
+            "unlimited": bool(match["unlimited"]),
             "secondsLeft": max(0, int(deadline - now() + 0.999)) if match["phase"] == "playing" else 0,
             "rules": {
                 "roundSeconds": match["round_seconds"],
@@ -1930,6 +1869,7 @@ class Handler(BaseHTTPRequestHandler):
                 "penaltyEnabled": bool(match["penalty_enabled"]),
                 "penalties": [match["penalty_first"], match["penalty_second"], match["penalty_repeat"]],
                 "scoringMode": match["scoring_mode"],
+                "questionLimit": 0 if match["unlimited"] else match["rounds"],
             },
             "players": [
                 {"username": host["username"], "rating": host["rating"], "score": match["host_score"], "you": host["id"] == session["id"]},
@@ -2159,35 +2099,6 @@ class Handler(BaseHTTPRequestHandler):
         correct, shown, error = check_answer(question["id"], payload)
         if error:
             return self.json(400, error=error)
-        if not correct:
-            open_resolution = resolve_open_answer(question, session["id"], payload)
-            if open_resolution and open_resolution["status"] == "correct":
-                correct, shown = True, open_resolution["shown"]
-            elif open_resolution and open_resolution["status"] == "pending":
-                cooldown_until = now() + QUIZ_RETRY_SECONDS
-                if own:
-                    db.execute(
-                        """
-                        UPDATE match_answers SET answer=?,created_at=?,pending_review=1,cooldown_until=?
-                        WHERE id=? AND settled=0
-                        """,
-                        (open_resolution["shown"], now(), cooldown_until, own["id"]),
-                    )
-                else:
-                    db.execute(
-                        """
-                        INSERT INTO match_answers(
-                            match_id,round_index,user_id,answer,correct,elapsed_ms,points,created_at,
-                            settled,abandoned,pending_review,attempt_count,cooldown_until
-                        ) VALUES(?,?,?,?,0,0,0,?,0,0,1,0,?)
-                        """,
-                        (match["id"], match["round_index"], session["id"], open_resolution["shown"], now(), cooldown_until),
-                    )
-                return self.json(
-                    correct=False,settled=False,pendingReview=True,
-                    candidateId=open_resolution["candidateId"],points=0,
-                    attempts=own["attempt_count"] if own else 0,cooldown=QUIZ_RETRY_SECONDS,
-                )
         elapsed_ms = max(0, int((now() - match["phase_started_at"]) * 1000))
         first_correct = db.execute(
             "SELECT COUNT(*) n FROM match_answers WHERE match_id=? AND round_index=? AND correct=1 AND settled=1",

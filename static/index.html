@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=12">
+  <link rel="stylesheet" href="/static/styles.css?v=13">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -110,7 +110,7 @@
               <div class="field-group">
                 <span class="field-label">题型</span>
                 <div class="segmented" id="solo-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
-                <p id="solo-open-rule" class="form-hint hidden">只从开放题池抽题；一道线索可能对应多道题，回答任一已确认答案均算正确。开放多解只支持传统对错。</p>
+                <p id="solo-open-rule" class="form-hint hidden">只从开放题池抽题；回答任一已收录答案均算正确，其他答案赛中按错答处理。开放多解只支持传统对错。</p>
               </div>
               <div class="field-group">
                 <span class="field-label">计分方式</span>
@@ -127,6 +127,11 @@
                 <div class="segmented" id="solo-timing"><button class="active" type="button" data-value="false">不限时</button><button type="button" data-value="true">倒计时</button></div>
                 <label id="solo-time-limit-wrap" class="inline-number hidden">每题时长（秒）<input id="solo-time-limit" type="number" min="30" max="600" step="15" value="120"></label>
                 <p id="solo-attempt-rule" class="form-hint hidden">倒计时内最多尝试 10 次，两次提交至少间隔 5 秒。</p>
+              </div>
+              <div class="field-group">
+                <label class="select-field">本局题数
+                  <select id="solo-rounds"><option value="5" selected>5 题</option><option value="10">10 题</option><option value="20">20 题</option><option value="0">无限</option></select>
+                </label>
               </div>
               <div class="field-group">
                 <span class="field-label">难度</span>
@@ -190,6 +195,19 @@
               <div id="solo-result" class="result-strip hidden"></div>
             </section>
           </section>
+
+          <section id="solo-settlement" class="settlement hidden" aria-labelledby="solo-settlement-title">
+            <header class="settlement-head"><div><p class="kicker">SESSION COMPLETE</p><h3 id="solo-settlement-title">本次结算</h3><p id="solo-settlement-copy"></p></div><strong id="solo-settlement-score">0</strong></header>
+            <div class="settlement-metrics">
+              <div><span>完成题数</span><strong id="solo-summary-rounds">0</strong></div>
+              <div><span>正确率</span><strong id="solo-summary-accuracy">0%</strong></div>
+              <div><span>本局用时</span><strong id="solo-summary-time">00:00</strong></div>
+              <div><span>Rating 变化</span><strong id="solo-summary-rating">0</strong></div>
+            </div>
+            <div class="settlement-table-wrap"><table><thead><tr><th>题次</th><th>结果</th><th>题目</th><th>得分</th><th>用时</th></tr></thead><tbody id="solo-summary-body"></tbody></table></div>
+            <p id="solo-dispute-note" class="settlement-note hidden">开放题答案如有遗漏，可在赛后通过“投稿线索”提交截图与说明。</p>
+            <div class="settlement-actions"><button id="solo-settlement-dashboard" class="secondary" type="button">返回概览</button><button id="solo-settlement-dispute" class="text-btn hidden" type="button">提交异议</button><button id="solo-settlement-retry" class="primary" type="button">再来一局</button></div>
+          </section>
         </section>
 
         <section id="view-battle" class="view">
@@ -199,7 +217,7 @@
               <div class="field-group">
                 <span class="field-label">题型</span>
                 <div class="segmented" id="battle-question-mode"><button class="active" type="button" data-value="standard">普通题</button><button type="button" data-value="open">开放多解</button></div>
-                <p id="battle-open-rule" class="form-hint hidden">本房间只使用开放题池；任一已确认答案均有效。开放多解只支持抢答模式。</p>
+                <p id="battle-open-rule" class="form-hint hidden">本房间只使用开放题池；未收录答案赛中按错答处理，异议可在赛后投稿。开放多解只支持抢答模式。</p>
               </div>
               <div class="field-group"><span class="field-label">模式</span><div class="segmented" id="battle-mode"><button class="active" type="button" data-value="false">娱乐模式</button><button type="button" data-value="true">Rating 模式</button></div></div>
               <div class="field-group">
@@ -208,7 +226,7 @@
                 <p id="battle-scoring-hint" class="form-hint hidden">每人每题只提交一次；Contest ID 与题号字母越接近越高，满分 5000，剩余时间最多影响 500 分。</p>
               </div>
               <div class="field-group"><span class="field-label">题目难度</span><div class="segmented" id="battle-difficulty"><button type="button" data-value="easy">简单</button><button class="active" type="button" data-value="medium">中等</button><button type="button" data-value="hard">困难</button><button type="button" data-value="brain">最强大脑</button><button type="button" data-value="all">混合</button></div></div>
-              <label>题目数量<select id="battle-rounds"><option value="3">3 题</option><option value="5" selected>5 题</option><option value="7">7 题</option></select></label>
+              <label>题目数量<select id="battle-rounds"><option value="3">3 题</option><option value="5" selected>5 题</option><option value="7">7 题</option><option value="10">10 题</option><option value="0">无限（娱乐模式）</option></select></label>
               <div class="field-group battle-rules-editor">
                 <span class="field-label">赛制规则</span>
                 <div class="battle-rule-grid">
@@ -236,7 +254,7 @@
           </div>
 
           <section id="battle-room" class="battle-room hidden">
-            <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><div class="room-actions"><span id="room-mode" class="mode-badge">娱乐模式</span><button id="exit-room" class="secondary room-exit" type="button">退出房间</button></div></header>
+            <header class="room-head"><div><p class="kicker">ROOM CODE</p><button id="room-code" class="room-code" title="点击复制" type="button">------</button></div><div class="room-actions"><span id="room-mode" class="mode-badge">娱乐模式</span><button id="finish-battle" class="secondary hidden" type="button">结束对战</button><button id="exit-room" class="secondary room-exit" type="button">退出房间</button></div></header>
             <div id="battle-rules-summary" class="battle-rules-summary"></div>
             <div id="lobby-state" class="lobby-state">
               <div id="battle-players" class="player-versus"></div>
@@ -257,6 +275,12 @@
                 <div id="battle-result" class="result-strip hidden"></div>
               </section>
             </div>
+            <section id="battle-settlement" class="settlement hidden" aria-labelledby="battle-settlement-title">
+              <header class="settlement-head"><div><p class="kicker">MATCH COMPLETE</p><h3 id="battle-settlement-title">对战结算</h3><p id="battle-settlement-copy"></p></div><strong id="battle-settlement-result">结束</strong></header>
+              <div id="battle-summary-players" class="battle-summary-players"></div>
+              <p id="battle-dispute-note" class="settlement-note hidden">开放题答案如有遗漏，可在赛后通过“投稿线索”提交截图与说明。</p>
+              <div class="settlement-actions"><button id="battle-settlement-dispute" class="text-btn hidden" type="button">提交异议</button><button id="battle-settlement-back" class="primary" type="button">返回对战大厅</button></div>
+            </section>
           </section>
         </section>
 
@@ -330,7 +354,7 @@
           </section>
           <section class="section-block open-candidate-block">
             <div class="section-head"><div><p class="kicker">OPEN ANSWERS</p><h3>开放题候选答案</h3></div><button id="refresh-open-candidates" class="text-btn" type="button">刷新</button></div>
-            <p class="section-copy">只有高置信题面匹配会自动通过；其余候选由管理员确认后加入答案集合。</p>
+            <p class="section-copy">这里仅保留旧版本产生的历史候选；新答案异议统一在赛后通过投稿线索提交。</p>
             <div id="open-candidate-list" class="review-list"><p class="empty-state">暂无待审核候选。</p></div>
           </section>
         </section>
@@ -352,6 +376,16 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=12" defer></script>
+  <div id="confirm-dialog" class="dialog-layer hidden" aria-hidden="true">
+    <button class="dialog-backdrop" type="button" tabindex="-1" aria-label="关闭确认对话框"></button>
+    <section class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <div class="confirm-mark" aria-hidden="true">!</div>
+      <p class="kicker">PLEASE CONFIRM</p>
+      <h3 id="confirm-title">确认操作</h3>
+      <p id="confirm-message"></p>
+      <div class="confirm-actions"><button id="confirm-cancel" class="secondary" type="button">取消</button><button id="confirm-accept" class="danger-btn" type="button">确认</button></div>
+    </section>
+  </div>
+  <script src="/static/app.js?v=13" defer></script>
 </body>
 </html>

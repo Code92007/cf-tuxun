@@ -3,13 +3,15 @@ const state = {
   csrf: "",
   authMode: "login",
   view: "dashboard",
-  solo: { filters: null, question: null, answerMode: "contest", rated: false, scoringMode: "classic", resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, startedAt: 0, timer: null, retryTimer: null },
+  solo: { filters: null, question: null, answerMode: "contest", rated: false, scoringMode: "classic", resolved: true, settling: false, timed: false, timeLimit: 0, attemptsUsed: 0, maxAttempts: 1, round: 0, roundLimit: 5, results: [], sessionStartedAt: 0, startedAt: 0, timer: null, retryTimer: null },
   daily: { challenge: null, timer: null, startedAt: 0, secondsLeft: 0, settling: false },
   battle: { code: null, answerMode: "contest", poll: null, polling: false, roundSeen: 0, current: null },
   uploadData: "",
 };
 
 const MAX_SUBMISSION_IMAGE_BYTES = 3 * 1024 * 1024;
+let confirmResolver = null;
+let confirmPreviousFocus = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -24,6 +26,35 @@ function toast(message, type = "") {
   el.className = `toast show ${type}`;
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { el.className = "toast"; }, 2800);
+}
+
+function closeConfirmDialog(accepted) {
+  const dialog = $("#confirm-dialog");
+  if (dialog.classList.contains("hidden")) return;
+  dialog.classList.add("hidden");
+  dialog.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("dialog-open");
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  if (confirmPreviousFocus?.focus) confirmPreviousFocus.focus();
+  confirmPreviousFocus = null;
+  if (resolve) resolve(Boolean(accepted));
+}
+
+function confirmAction({ title, message, confirmLabel = "确认", danger = true }) {
+  if (confirmResolver) closeConfirmDialog(false);
+  confirmPreviousFocus = document.activeElement;
+  $("#confirm-title").textContent = title;
+  $("#confirm-message").textContent = message;
+  const accept = $("#confirm-accept");
+  accept.textContent = confirmLabel;
+  accept.className = danger ? "danger-btn" : "primary";
+  const dialog = $("#confirm-dialog");
+  dialog.classList.remove("hidden");
+  dialog.setAttribute("aria-hidden", "false");
+  document.body.classList.add("dialog-open");
+  requestAnimationFrame(() => $("#confirm-cancel").focus());
+  return new Promise(resolve => { confirmResolver = resolve; });
 }
 
 async function api(path, options = {}) {
@@ -237,13 +268,21 @@ async function startSolo() {
   state.solo.scoringMode = selectedValue("#solo-scoring-mode") || "classic";
   state.solo.timed = state.solo.rated || selectedValue("#solo-timing") === "true";
   state.solo.timeLimit = state.solo.rated ? 120 : Number($("#solo-time-limit").value || 120);
+  state.solo.roundLimit = Number($("#solo-rounds").value || 0);
+  state.solo.results = [];
+  state.solo.sessionStartedAt = Date.now();
   state.solo.round = 0;
   $("#solo-setup").classList.add("hidden");
+  $("#solo-settlement").classList.add("hidden");
   $("#solo-game").classList.remove("hidden");
   await nextSoloQuestion();
 }
 
 async function nextSoloQuestion() {
+  if (state.solo.roundLimit && state.solo.results.length >= state.solo.roundLimit) {
+    showSoloSettlement("completed");
+    return;
+  }
   const button = $("#solo-start");
   try {
     setButtonBusy(button, true, "正在抽题...");
@@ -268,8 +307,11 @@ async function nextSoloQuestion() {
     state.solo.attemptsUsed = 0;
     state.solo.round += 1;
     state.solo.startedAt = Date.now();
-    $("#solo-round-label").textContent = `第 ${state.solo.round} 题`;
-    $("#solo-progress").style.width = `${Math.min(100, (state.solo.round % 10 || 10) * 10)}%`;
+    const roundLabel = state.solo.roundLimit ? `第 ${state.solo.round} / ${state.solo.roundLimit} 题` : `第 ${state.solo.round} 题 · 无限`;
+    $("#solo-round-label").textContent = roundLabel;
+    $("#solo-progress").style.width = state.solo.roundLimit
+      ? `${Math.min(100, 100 * state.solo.round / state.solo.roundLimit)}%`
+      : `${(state.solo.round % 10 || 10) * 10}%`;
     $("#solo-clue").src = `${payload.question.clueUrl}?v=${Date.now()}`;
     $("#solo-result").className = "result-strip hidden";
     $("#solo-result").innerHTML = "";
@@ -653,14 +695,6 @@ async function submitSoloAnswer(event) {
       body: { token: state.solo.question.token, ...answerPayload("solo", state.solo.answerMode) },
     });
     if (!payload.settled) {
-      if (payload.pendingReview) {
-        $("#solo-answer-form").reset();
-        renderDivisionChoices("solo", state.solo.question);
-        setSoloAnswerMode("contest");
-        toast("这个答案尚未收录，已进入管理员审核；本次不扣机会");
-        cooldown = payload.retryAfter;
-        return;
-      }
       state.solo.attemptsUsed = payload.attemptsUsed;
       $("#solo-attempts-status").textContent = `${payload.attemptsUsed} / ${state.solo.maxAttempts} 次`;
       $("#solo-answer-form").reset();
@@ -705,7 +739,68 @@ function ratingDeltaText(payload) {
   return ` · Rating ${sign}${payload.ratingDelta}`;
 }
 
-function renderSoloResolution(payload, abandoned) {
+function recordSoloResult(payload, abandoned) {
+  const token = state.solo.question?.token;
+  if (!token || state.solo.results.some(result => result.token === token)) return;
+  const labels = { timeout: "超时", attempts: "未命中", abandoned: "放弃", answered: "错误" };
+  let status = payload.correct ? "正确" : labels[payload.terminalReason] || "错误";
+  if (payload.scoringMode === "distance" && !payload.correct) status = payload.points > 0 ? "距离得分" : "未得分";
+  if (abandoned) status = "放弃";
+  state.solo.results.push({
+    token,
+    correct: Boolean(payload.correct),
+    points: Number(payload.points || 0),
+    elapsedMs: Number(payload.elapsedMs || 0),
+    ratingDelta: Number(payload.ratingDelta || 0),
+    status,
+    title: payload.solution?.title || "最强大脑题",
+  });
+}
+
+function showSoloSettlement(reason = "ended") {
+  clearInterval(state.solo.timer);
+  clearInterval(state.solo.retryTimer);
+  state.solo.question = null;
+  state.solo.resolved = true;
+  state.solo.settling = false;
+  $("#solo-setup").classList.add("hidden");
+  $("#solo-game").classList.add("hidden");
+  $("#solo-settlement").classList.remove("hidden");
+  const total = state.solo.results.length;
+  const correct = state.solo.results.filter(result => result.correct).length;
+  const points = state.solo.results.reduce((sum, result) => sum + result.points, 0);
+  const elapsedMs = state.solo.sessionStartedAt
+    ? Math.max(0, Date.now() - state.solo.sessionStartedAt)
+    : state.solo.results.reduce((sum, result) => sum + result.elapsedMs, 0);
+  const ratingDelta = state.solo.results.reduce((sum, result) => sum + result.ratingDelta, 0);
+  const completed = reason === "completed";
+  $("#solo-settlement-copy").textContent = completed
+    ? `已完成本局 ${total} 道题。`
+    : `本局在第 ${Math.max(1, state.solo.round)} 题后结束。`;
+  $("#solo-settlement-score").textContent = `${points.toLocaleString()} 分`;
+  $("#solo-summary-rounds").textContent = state.solo.roundLimit ? `${total} / ${state.solo.roundLimit}` : `${total} / 无限`;
+  $("#solo-summary-accuracy").textContent = total ? `${Math.round(correct * 100 / total)}%` : "0%";
+  $("#solo-summary-time").textContent = formatDurationMs(elapsedMs);
+  $("#solo-summary-rating").textContent = `${ratingDelta > 0 ? "+" : ""}${ratingDelta}`;
+  $("#solo-summary-body").innerHTML = state.solo.results.length
+    ? state.solo.results.map((result, index) => `<tr><td>#${index + 1}</td><td>${escapeHtml(result.status)}</td><td>${escapeHtml(result.title)}</td><td>${result.points.toLocaleString()}</td><td>${formatDurationMs(result.elapsedMs)}</td></tr>`).join("")
+    : '<tr><td colspan="5">本局尚未结算题目</td></tr>';
+  const openMode = state.solo.filters?.questionMode === "open";
+  $("#solo-dispute-note").classList.toggle("hidden", !openMode);
+  $("#solo-settlement-dispute").classList.toggle("hidden", !openMode);
+  refreshMe();
+}
+
+function openDisputeSubmission(source) {
+  resetSoloSession();
+  showView("submit");
+  $("#submission-open").checked = true;
+  updateSubmissionOpenControls();
+  $("#submission-note").value = `${source}开放题判定异议：请附上对应截图、你的答案和说明。`;
+  $("#submission-answer").focus();
+}
+
+function renderSoloResolution(payload, abandoned, { endAfter = false } = {}) {
   clearInterval(state.solo.timer);
   clearInterval(state.solo.retryTimer);
   state.solo.resolved = true;
@@ -714,6 +809,7 @@ function renderSoloResolution(payload, abandoned) {
   if (state.solo.timed) $("#solo-attempts-status").textContent = `${payload.attemptsUsed} / ${state.solo.maxAttempts} 次`;
   state.user = payload.user;
   renderUser();
+  recordSoloResult(payload, abandoned);
   $("#solo-answer-form").classList.add("hidden");
   $("#abandon-solo").classList.add("hidden");
   const result = $("#solo-result");
@@ -730,12 +826,20 @@ function renderSoloResolution(payload, abandoned) {
   const detail = payload.solutionWithheld
     ? "<span>最强大脑题未命中，正确答案暂不公开。</span>"
     : `<span>${escapeHtml(payload.solution.title)} · ${payload.solution.rating}</span><br><span>${solutionText(payload.solution)}</span><br><a href="${escapeHtml(payload.solution.sourceUrl)}" target="_blank" rel="noreferrer">查看原题</a>`;
-  result.innerHTML = `<strong>${heading}${ratingDeltaText(payload)}</strong>${detail} <button id="next-solo" class="text-btn" type="button">下一题</button>`;
-  $("#next-solo").addEventListener("click", nextSoloQuestion);
+  const completed = Boolean(state.solo.roundLimit && state.solo.results.length >= state.solo.roundLimit);
+  result.innerHTML = `<strong>${heading}${ratingDeltaText(payload)}</strong>${detail} <button id="next-solo" class="text-btn" type="button">${completed ? "查看结算" : "下一题"}</button>`;
+  $("#next-solo").addEventListener("click", completed ? () => showSoloSettlement("completed") : nextSoloQuestion);
+  if (endAfter) showSoloSettlement("ended");
 }
 
 async function abandonSoloQuestion() {
   if (!state.solo.question || state.solo.resolved) return;
+  const confirmed = await confirmAction({
+    title: "放弃当前题目？",
+    message: "本题会按错误结算，并计入本局统计。",
+    confirmLabel: "确认放弃",
+  });
+  if (!confirmed) return;
   const button = $("#abandon-solo");
   state.solo.settling = true;
   setButtonBusy(button, true, "结算中...");
@@ -778,14 +882,22 @@ function resetSoloSession() {
   state.solo.question = null;
   state.solo.resolved = true;
   state.solo.settling = false;
+  state.solo.round = 0;
+  state.solo.results = [];
   $("#solo-game").classList.add("hidden");
+  $("#solo-settlement").classList.add("hidden");
   $("#solo-setup").classList.remove("hidden");
 }
 
 async function endSoloSession() {
   const button = $("#end-solo");
   if (state.solo.question && !state.solo.resolved) {
-    if (!window.confirm("当前题会按放弃结算，确定结束本次吗？")) return;
+    const confirmed = await confirmAction({
+      title: "结束本次图寻？",
+      message: "当前题会按放弃结算，随后进入本局结算画面。",
+      confirmLabel: "结束并结算",
+    });
+    if (!confirmed) return;
     state.solo.settling = true;
     setButtonBusy(button, true, "结算中...");
     try {
@@ -793,10 +905,7 @@ async function endSoloSession() {
         method: "POST",
         body: { token: state.solo.question.token },
       });
-      state.user = payload.user;
-      renderUser();
-      resetSoloSession();
-      toast(`本次已结束${ratingDeltaText(payload)}`);
+      renderSoloResolution(payload, true, { endAfter: true });
     } catch (error) {
       state.solo.settling = false;
       toast(error.message, "error");
@@ -805,8 +914,7 @@ async function endSoloSession() {
     }
     return;
   }
-  resetSoloSession();
-  toast("本次已结束");
+  showSoloSettlement("ended");
 }
 
 function formatDurationMs(elapsedMs) {
@@ -1075,6 +1183,7 @@ function renderBattle(match) {
   $("#room-mode").textContent = `${questionMode} · ${match.rated ? "Rating 模式" : "娱乐模式"} · ${match.scoringMode === "distance" ? "积分赛" : "抢答赛"}`;
   const penalties = match.rules.penalties;
   $("#battle-rules-summary").innerHTML = [
+    `<span>${match.unlimited ? "无限题 · 房主结束后结算" : `${match.rounds} 题`}</span>`,
     `<span>每题 ${match.rules.roundSeconds} 秒</span>`,
     `<span>${match.scoringMode === "distance" ? "单次锁定 · 每题最高 5000 分" : match.rules.penaltyEnabled ? `错答罚时 ${penalties[0]} / ${penalties[1]} / ${penalties[2]} 秒` : "错答不罚时"}</span>`,
     `<span>一方放弃后最多等待 ${match.rules.abandonSeconds} 秒</span>`,
@@ -1082,6 +1191,8 @@ function renderBattle(match) {
   if (match.status === "waiting") {
     $("#lobby-state").classList.remove("hidden");
     $("#battle-game").classList.add("hidden");
+    $("#battle-settlement").classList.add("hidden");
+    $("#finish-battle").classList.add("hidden");
     renderPlayers(match.players);
     const ready = Boolean(match.players[1]);
     $("#lobby-message").textContent = ready ? "两位玩家已就位" : "等待另一位玩家加入...";
@@ -1090,21 +1201,24 @@ function renderBattle(match) {
   }
 
   $("#lobby-state").classList.add("hidden");
-  $("#battle-game").classList.remove("hidden");
   renderScoreboard(match.players);
-  $("#battle-round-label").textContent = `第 ${match.round} / ${match.rounds} 题${match.openMode ? " · 开放题" : ""}`;
-  $("#battle-progress").style.width = `${100 * match.round / match.rounds}%`;
-  $("#battle-timer").textContent = `${match.secondsLeft}s`;
+  $("#finish-battle").classList.toggle("hidden", !(match.status === "active" && match.unlimited && match.isHost));
 
   if (match.status === "finished") {
     stopBattlePoll();
-    $("#battle-answer-form").classList.add("hidden");
-    const result = $("#battle-result");
-    result.className = "result-strip";
-    result.innerHTML = `<strong>对战结束</strong><span>${match.winner === "draw" ? "平局" : `${escapeHtml(match.winner)} 获胜`}</span>`;
-    refreshMe();
+    renderBattleSettlement(match);
     return;
   }
+
+  $("#battle-settlement").classList.add("hidden");
+  $("#battle-game").classList.remove("hidden");
+  $("#battle-round-label").textContent = match.unlimited
+    ? `第 ${match.round} 题 · 无限${match.openMode ? " · 开放题" : ""}`
+    : `第 ${match.round} / ${match.rounds} 题${match.openMode ? " · 开放题" : ""}`;
+  $("#battle-progress").style.width = match.unlimited
+    ? `${(match.round % 10 || 10) * 10}%`
+    : `${100 * match.round / match.rounds}%`;
+  $("#battle-timer").textContent = `${match.secondsLeft}s`;
 
   const clue = $("#battle-clue");
   const cluePath = new URL(match.clueUrl, location.origin).pathname + new URL(match.clueUrl, location.origin).search;
@@ -1148,7 +1262,7 @@ function renderBattle(match) {
   } else if (match.phase === "reveal") {
     $("#battle-answer-form").classList.add("hidden");
     const result = $("#battle-result");
-    const labels = { correct: "完全命中", scored: "已计分", abandoned: "放弃", pending: "候选待审核", miss: "未命中", timeout: "未作答" };
+    const labels = { correct: "完全命中", scored: "已计分", abandoned: "放弃", pending: "未收录", miss: "未命中", timeout: "未作答" };
     const rows = match.reveal.answers.map(a => {
       const attempts = a.attempts ? `，尝试 ${a.attempts} 次` : "";
       const points = ["correct", "scored"].includes(a.status) ? ` +${a.points}` : "";
@@ -1163,6 +1277,20 @@ function renderBattle(match) {
       result.innerHTML = `<strong>${escapeHtml(match.reveal.solution.title)} · ${match.reveal.solution.rating}</strong><span>${solutionText(match.reveal.solution)}</span><br><span>${rows}</span>`;
     }
   }
+}
+
+function renderBattleSettlement(match) {
+  $("#battle-game").classList.add("hidden");
+  $("#battle-settlement").classList.remove("hidden");
+  $("#finish-battle").classList.add("hidden");
+  const result = match.winner === "draw" ? "平局" : `${match.winner} 获胜`;
+  $("#battle-settlement-result").textContent = result;
+  $("#battle-settlement-copy").textContent = `${match.round} 题 · ${match.rated ? "Rating 模式" : "娱乐模式"} · ${match.scoringMode === "distance" ? "积分赛" : "抢答赛"}`;
+  $("#battle-summary-players").innerHTML = match.players.filter(Boolean).map(player => `<div class="${player.you ? "you" : ""}"><span>${escapeHtml(player.username)}${player.you ? "（你）" : ""}</span><strong>${Number(player.score).toLocaleString()}</strong><span>${player.rating} rating</span></div>`).join("");
+  const openMode = match.questionMode === "open";
+  $("#battle-dispute-note").classList.toggle("hidden", !openMode);
+  $("#battle-settlement-dispute").classList.toggle("hidden", !openMode);
+  refreshMe();
 }
 
 async function startBattle() {
@@ -1188,11 +1316,9 @@ async function submitBattleAnswer(event) {
       method: "POST",
       body: answerPayload("battle", state.battle.answerMode),
     });
-    const wrongMessage = payload.pendingReview
-      ? "这个答案尚未收录，已送管理员审核；本次不计错答"
-      : payload.cooldown ? `没有命中，罚时 ${payload.cooldown} 秒` : "没有命中，可以继续尝试";
+    const wrongMessage = payload.cooldown ? `没有命中，罚时 ${payload.cooldown} 秒` : "没有命中，可以继续尝试";
     const scored = state.battle.current?.scoringMode === "distance" && payload.settled;
-    toast(scored ? `答案已锁定，+${payload.points} 分` : payload.correct ? `回答正确，+${payload.points} 分` : wrongMessage, payload.correct || payload.pendingReview || scored ? "" : "error");
+    toast(scored ? `答案已锁定，+${payload.points} 分` : payload.correct ? `回答正确，+${payload.points} 分` : wrongMessage, payload.correct || scored ? "" : "error");
     refresh = true;
   } catch (error) {
     toast(error.message, "error");
@@ -1205,7 +1331,12 @@ async function submitBattleAnswer(event) {
 async function abandonBattleQuestion() {
   const match = state.battle.current;
   if (!match || match.phase !== "playing" || match.ownStatus !== "playing") return;
-  if (!window.confirm("放弃后本题不能继续作答，确定放弃吗？")) return;
+  const confirmed = await confirmAction({
+    title: "放弃当前题目？",
+    message: "放弃后本题不能继续作答；对手仍可在剩余时间内作答。",
+    confirmLabel: "确认放弃",
+  });
+  if (!confirmed) return;
   const button = $("#abandon-battle");
   setButtonBusy(button, true, "放弃中...");
   try {
@@ -1231,13 +1362,42 @@ function updateBattleScoringControls() {
   $("#battle-penalty-block").classList.toggle("hidden", distance);
 }
 
+function updateBattleRoundLimit() {
+  if ($("#battle-rounds").value !== "0" || selectedValue("#battle-mode") !== "true") return;
+  selectSegment($("#battle-mode"), $("#battle-mode button[data-value='false']"));
+  toast("无限题仅支持娱乐模式，已自动切换");
+}
+
 function resetBattleRoom() {
   stopBattlePoll();
   state.battle.code = null;
   state.battle.roundSeen = 0;
   state.battle.current = null;
   $("#battle-room").classList.add("hidden");
+  $("#battle-settlement").classList.add("hidden");
+  $("#finish-battle").classList.add("hidden");
   $("#battle-setup").classList.remove("hidden");
+}
+
+async function finishBattle() {
+  const match = state.battle.current;
+  if (!match || !match.unlimited || !match.isHost || match.status !== "active") return;
+  const confirmed = await confirmAction({
+    title: "结束这场对战？",
+    message: "将按当前比分立即结束无限题对战，并进入结算画面。",
+    confirmLabel: "结束并结算",
+  });
+  if (!confirmed) return;
+  const button = $("#finish-battle");
+  setButtonBusy(button, true, "结算中...");
+  try {
+    await api(`/api/matches/${state.battle.code}/finish`, { method: "POST", body: {} });
+    await pollBattle();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
 }
 
 async function leaveRoom() {
@@ -1275,7 +1435,15 @@ function bindEvents() {
   $("#menu-btn").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
   $$(".nav-item").forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.view)));
   $$('[data-go]').forEach(btn => btn.addEventListener("click", () => showView(btn.dataset.go)));
-  $$("#battle-mode button, #submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#submission-kind button").forEach(btn => btn.addEventListener("click", () => selectSegment(btn.parentElement, btn)));
+  $$("#battle-mode button").forEach(btn => btn.addEventListener("click", () => {
+    selectSegment(btn.parentElement, btn);
+    if (btn.dataset.value === "true" && $("#battle-rounds").value === "0") {
+      $("#battle-rounds").value = "5";
+      toast("Rating 模式使用固定题数，已切换为 5 题");
+    }
+  }));
+  $("#battle-rounds").addEventListener("change", updateBattleRoundLimit);
   $$("#solo-difficulty button, #battle-difficulty button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateScoringCompatibility(); }));
   $$("#solo-question-mode button, #battle-question-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateQuestionModeHints(); }));
   $$("#solo-scoring-mode button").forEach(btn => btn.addEventListener("click", () => { selectSegment(btn.parentElement, btn); updateSoloScoringControls(); }));
@@ -1286,6 +1454,9 @@ function bindEvents() {
   $("#solo-start").addEventListener("click", startSolo);
   $("#abandon-solo").addEventListener("click", abandonSoloQuestion);
   $("#end-solo").addEventListener("click", endSoloSession);
+  $("#solo-settlement-retry").addEventListener("click", resetSoloSession);
+  $("#solo-settlement-dashboard").addEventListener("click", () => { resetSoloSession(); showView("dashboard"); });
+  $("#solo-settlement-dispute").addEventListener("click", () => openDisputeSubmission("单人图寻"));
   $$('[data-answer-mode]').forEach(btn => btn.addEventListener("click", () => setSoloAnswerMode(btn.dataset.answerMode)));
   $("#solo-answer-form").addEventListener("submit", submitSoloAnswer);
   $("#refresh-board").addEventListener("click", loadLeaderboard);
@@ -1317,9 +1488,18 @@ function bindEvents() {
   });
   $("#start-battle").addEventListener("click", startBattle);
   $("#exit-room").addEventListener("click", leaveRoom);
+  $("#finish-battle").addEventListener("click", finishBattle);
+  $("#battle-settlement-back").addEventListener("click", resetBattleRoom);
+  $("#battle-settlement-dispute").addEventListener("click", () => { resetBattleRoom(); openDisputeSubmission("双人对战"); });
   $("#abandon-battle").addEventListener("click", abandonBattleQuestion);
   $$('[data-battle-answer-mode]').forEach(btn => btn.addEventListener("click", () => setBattleAnswerMode(btn.dataset.battleAnswerMode)));
   $("#battle-answer-form").addEventListener("submit", submitBattleAnswer);
+  $("#confirm-cancel").addEventListener("click", () => closeConfirmDialog(false));
+  $("#confirm-accept").addEventListener("click", () => closeConfirmDialog(true));
+  $(".dialog-backdrop").addEventListener("click", () => closeConfirmDialog(false));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !$("#confirm-dialog").classList.contains("hidden")) closeConfirmDialog(false);
+  });
 }
 
 async function boot() {

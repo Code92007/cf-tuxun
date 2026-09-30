@@ -7,7 +7,6 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
 
 
 TEST_DATA = tempfile.TemporaryDirectory()
@@ -197,6 +196,45 @@ class AppTest(unittest.TestCase):
         status, room = host.request("GET", f"/api/matches/{code}")
         self.assertEqual(status, 200)
         self.assertEqual(room["match"]["phase"], "reveal")
+
+    def test_unlimited_battle_adds_rounds_and_host_can_finish(self):
+        host, _ = self.register("unlimited_host")
+        guest, _ = self.register("unlimited_guest")
+        status, rejected = host.request("POST", "/api/matches", {
+            "rated": True, "rounds": 0, "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("仅支持娱乐模式", rejected["error"])
+
+        status, created = host.request("POST", "/api/matches", {
+            "rounds": 0, "filters": {"difficulty": "medium"},
+        })
+        self.assertEqual(status, 200, created)
+        code = created["code"]
+        self.assertEqual(guest.request("POST", "/api/matches/join", {"code": code})[0], 200)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/start", {})[0], 200)
+        match = get_db().execute("SELECT * FROM matches WHERE code=?", (code,)).fetchone()
+        self.assertEqual(match["unlimited"], 1)
+        self.assertEqual(match["rounds"], 0)
+        self.assertEqual(len(load_json(match["question_ids_json"])), 1)
+
+        get_db().execute(
+            "UPDATE matches SET phase='reveal',phase_started_at=? WHERE id=?",
+            (time.time() - 10, match["id"]),
+        )
+        status, room = host.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, room)
+        self.assertTrue(room["match"]["unlimited"])
+        self.assertEqual(room["match"]["round"], 2)
+        self.assertEqual(room["match"]["rounds"], 0)
+        match = get_db().execute("SELECT * FROM matches WHERE id=?", (match["id"],)).fetchone()
+        self.assertEqual(len(load_json(match["question_ids_json"])), 2)
+
+        self.assertEqual(guest.request("POST", f"/api/matches/{code}/finish", {})[0], 403)
+        self.assertEqual(host.request("POST", f"/api/matches/{code}/finish", {})[0], 200)
+        status, room = host.request("GET", f"/api/matches/{code}")
+        self.assertEqual(status, 200, room)
+        self.assertEqual(room["match"]["status"], "finished")
 
     def test_battle_penalties_and_abandon_grace_period(self):
         host, _ = self.register("penalty_host")
@@ -837,7 +875,7 @@ class AppTest(unittest.TestCase):
         self.assertGreater(board["players"][0]["score"], 22500)
         self.assertEqual(board["players"][0]["elapsedMs"], 15000)
 
-    def test_open_mode_queues_unknown_answers_without_spending_attempts(self):
+    def test_open_mode_unknown_answers_are_wrong_without_review(self):
         client, registered = self.register("open_answer_user")
         db = get_db()
         cursor = db.execute(
@@ -861,24 +899,19 @@ class AppTest(unittest.TestCase):
             """,
             (token, registered["user"]["id"], question_id, "medium", 120, 10, time.time()),
         )
-        status, pending = client.request("POST", "/api/quiz/answer", {
+        status, wrong = client.request("POST", "/api/quiz/answer", {
             "token": token, "answerMode": "contest", "contestAnswer": "2292B",
         })
-        self.assertEqual(status, 200, pending)
-        self.assertTrue(pending["pendingReview"])
-        self.assertEqual(pending["attemptsUsed"], 0)
+        self.assertEqual(status, 200, wrong)
+        self.assertFalse(wrong["correct"])
+        self.assertFalse(wrong["settled"])
+        self.assertEqual(wrong["attemptsUsed"], 1)
         self.assertEqual(db.execute(
             "SELECT attempt_count FROM quiz_rounds WHERE token=?", (token,)
-        ).fetchone()["attempt_count"], 0)
-
-        db.execute("UPDATE users SET is_admin=1 WHERE id=?", (registered["user"]["id"],))
-        status, reviewed = client.request(
-            "POST", f'/api/admin/open-candidates/{pending["candidateId"]}/review', {"action": "approve"}
-        )
-        self.assertEqual(status, 200, reviewed)
-        self.assertTrue(check_answer(question_id, {
-            "answerMode": "contest", "contestAnswer": "2292B",
-        })[0])
+        ).fetchone()["attempt_count"], 1)
+        self.assertEqual(db.execute(
+            "SELECT COUNT(*) n FROM open_answer_candidates WHERE question_id=?", (question_id,)
+        ).fetchone()["n"], 0)
 
         second = db.execute(
             """
@@ -898,12 +931,36 @@ class AppTest(unittest.TestCase):
             "INSERT INTO quiz_rounds(token,user_id,question_id,difficulty,started_at) VALUES(?,?,?,?,?)",
             (auto_token, registered["user"]["id"], second, "medium", time.time()),
         )
-        with patch("app.fetch_codeforces_problem_text", return_value="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi"):
-            status, approved = client.request("POST", "/api/quiz/answer", {
-                "token": auto_token, "answerMode": "contest", "contestAnswer": "2294D",
-            })
-        self.assertEqual(status, 200, approved)
-        self.assertTrue(approved["correct"])
+        status, settled = client.request("POST", "/api/quiz/answer", {
+            "token": auto_token, "answerMode": "contest", "contestAnswer": "2294D",
+        })
+        self.assertEqual(status, 200, settled)
+        self.assertFalse(settled["correct"])
+        self.assertTrue(settled["settled"])
+        self.assertEqual(db.execute(
+            "SELECT COUNT(*) n FROM open_answer_candidates WHERE question_id=?", (second,)
+        ).fetchone()["n"], 0)
+
+        guest, _ = self.register("open_answer_guest")
+        status, created = client.request("POST", "/api/matches", {
+            "rounds": 0,
+            "penaltyEnabled": False,
+            "filters": {"difficulty": "all", "questionMode": "open"},
+        })
+        self.assertEqual(status, 200, created)
+        code = created["code"]
+        self.assertEqual(guest.request("POST", "/api/matches/join", {"code": code})[0], 200)
+        self.assertEqual(client.request("POST", f"/api/matches/{code}/start", {})[0], 200)
+        active = get_db().execute("SELECT * FROM matches WHERE code=?", (code,)).fetchone()
+        battle_question_id = load_json(active["question_ids_json"])[0]
+        status, battle_wrong = client.request("POST", f"/api/matches/{code}/answer", {
+            "answerMode": "contest", "contestAnswer": "9999Z",
+        })
+        self.assertEqual(status, 200, battle_wrong)
+        self.assertFalse(battle_wrong["correct"])
+        self.assertEqual(db.execute(
+            "SELECT COUNT(*) n FROM open_answer_candidates WHERE question_id=?", (battle_question_id,)
+        ).fetchone()["n"], 0)
 
     def test_existing_alias_schema_migrates_without_losing_data(self):
         from cfshot import db as db_module

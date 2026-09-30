@@ -614,7 +614,7 @@ class AppTest(unittest.TestCase):
         submission_id = submitted["submission"]["id"]
         status, reviewed = client.request("POST", f"/api/admin/submissions/{submission_id}/review", {
             "action": "approve",
-            "title": "Bermuda Rectangle",
+            "title": "   ",
             "rating": 1600,
             "roundNumber": 1117,
             "division": "Div. 2",
@@ -630,6 +630,9 @@ class AppTest(unittest.TestCase):
         submission = get_db().execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
         self.assertEqual(submission["status"], "approved")
         self.assertTrue(submission["image_path"])
+        question = get_db().execute("SELECT * FROM questions WHERE id=?", (reviewed["questionId"],)).fetchone()
+        self.assertEqual(question["title"], "2257D")
+        self.assertEqual(question["canonical_key"], f"2257D@submission{submission_id}")
 
     def test_rated_solo_requires_a_broad_pool_and_penalizes_abandon(self):
         client, registered = self.register("rated_solo")

@@ -1188,7 +1188,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(ok=True, submissionStatus="rejected")
         if action != "approve":
             return self.json(400, error="审核操作无效")
-        title = str(payload.get("title", "")).strip()[:200]
+        title = str(payload.get("title") or "").strip()[:200]
+        title = title or f'{submission["contest_id"]}{submission["problem_index"]}'
         division = str(payload.get("division", "Div. 2")).strip()[:40]
         try:
             rating = int(payload.get("rating"))
@@ -1196,8 +1197,8 @@ class Handler(BaseHTTPRequestHandler):
             contest_time = int(payload.get("contestTime") or now())
         except (TypeError, ValueError):
             return self.json(400, error="rating、Round 和比赛时间必须是数字")
-        if not title or not 800 <= rating <= 4000 or round_number < 1:
-            return self.json(400, error="请填写有效的题名、rating 和 Round")
+        if not 800 <= rating <= 4000 or round_number < 1:
+            return self.json(400, error="请填写有效的 rating 和 Round")
         key = f'{submission["contest_id"]}{submission["problem_index"]}@submission{submission_id}'
         clue_text = submission["clue_text"] or submission["note"] or "User-submitted visual clue reviewed for unique recognition."
         brain = int(bool(payload.get("brain", submission["suggested_brain"])))

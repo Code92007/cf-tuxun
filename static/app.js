@@ -1525,6 +1525,7 @@ async function boot() {
 }
 
 let searchImage = "";
+let searchAutoText = "";
 async function loadSearchStatus() {
   if (!state.user?.isSuperAdmin) return;
   try {
@@ -1535,17 +1536,35 @@ async function loadSearchStatus() {
 async function setSearchImage(file) {
   if (!file || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) return toast("请选择 PNG、JPEG 或 WebP 图片", "error");
   if (file.size > 3 * 1024 * 1024) return toast("图片不能超过 3 MB", "error");
+  if ($("#search-text").value === searchAutoText) $("#search-text").value = "";
+  searchAutoText = "";
   searchImage = await new Promise((resolve, reject) => {
     const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
   });
   $("#search-preview").src = searchImage;
   $("#search-preview-wrap").classList.remove("hidden");
 }
-$("#search-file").addEventListener("change", e => setSearchImage(e.target.files[0]).catch(() => toast("图片读取失败", "error")));
-$("#search-clear").addEventListener("click", () => {
-  searchImage = ""; $("#search-file").value = ""; $("#search-preview").removeAttribute("src"); $("#search-preview-wrap").classList.add("hidden");
+$("#search-paste").addEventListener("click", async () => {
+  if (!navigator.clipboard?.read) { $("#search-drop-zone").focus(); return toast("请按 Ctrl/Cmd+V 粘贴截图"); }
+  try {
+    for (const item of await navigator.clipboard.read()) {
+      const type = item.types.find(t => ["image/png", "image/jpeg", "image/webp"].includes(t));
+      if (type) return await setSearchImage(await item.getType(type));
+    }
+    toast("剪贴板中没有图片，请先使用系统截图", "error");
+  } catch (_) { $("#search-drop-zone").focus(); toast("请按 Ctrl/Cmd+V 粘贴截图"); }
 });
-$("#search-form").addEventListener("paste", e => {
+$("#search-drop-zone").addEventListener("dragover", e => { e.preventDefault(); e.currentTarget.classList.add("dragging"); });
+$("#search-drop-zone").addEventListener("dragleave", e => e.currentTarget.classList.remove("dragging"));
+$("#search-drop-zone").addEventListener("drop", e => {
+  e.preventDefault(); e.currentTarget.classList.remove("dragging");
+  setSearchImage(e.dataTransfer?.files[0]).catch(() => toast("图片读取失败", "error"));
+});
+$("#search-clear").addEventListener("click", () => {
+  searchImage = ""; $("#search-preview").removeAttribute("src"); $("#search-preview-wrap").classList.add("hidden");
+});
+document.addEventListener("paste", e => {
+  if (state.view !== "search" || !state.user?.isSuperAdmin) return;
   const file = [...(e.clipboardData?.items || [])].find(i => i.kind === "file" && i.type.startsWith("image/"))?.getAsFile();
   if (file) { e.preventDefault(); setSearchImage(file).catch(() => toast("图片读取失败", "error")); }
 });
@@ -1555,7 +1574,7 @@ $("#search-form").addEventListener("submit", async e => {
   button.disabled = true; $("#search-message").textContent = "正在检索…"; $("#search-results").replaceChildren();
   try {
     const s = await api("/api/admin/search", {method:"POST", body:{text:$("#search-text").value, image:searchImage || undefined}});
-    if (s.recognizedText && !$("#search-text").value.trim()) $("#search-text").value = s.recognizedText;
+    if (s.recognizedText && !$("#search-text").value.trim()) { $("#search-text").value = s.recognizedText; searchAutoText = s.recognizedText; }
     $("#search-message").textContent = `${s.results.length ? "找到 " + s.results.length + " 个候选" : "暂无匹配；请检查截图文字或回刷进度"}${s.warnings.length ? " · " + s.warnings.join("；") : ""}`;
     $("#search-results").innerHTML = s.results.map(r => `<article class="submission-item"><div class="submission-copy"><strong><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${r.contest}${escapeHtml(r.problem)} · ${escapeHtml(r.title)}</a></strong><span>${escapeHtml(r.contest_name)}${r.imageSimilarity !== undefined ? " · 图像相似度 " + (r.imageSimilarity * 100).toFixed(0) + "%" : ""}</span><p>${escapeHtml(r.snippet)}</p></div></article>`).join("");
   } catch (err) { $("#search-message").textContent = err.message; }

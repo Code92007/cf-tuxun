@@ -2187,6 +2187,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     init_db()
+    from cfshot.search_snapshot import restore_snapshot_if_empty
+    restore_snapshot_if_empty()
     from cfshot.search import resume
     resume()
     host = os.environ.get("HOST", "127.0.0.1")

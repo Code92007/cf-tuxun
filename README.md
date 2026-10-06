@@ -96,7 +96,7 @@ python3 scripts/make_admin.py 用户名 --super
 
 ## 超级管理员搜题
 
-“搜题”入口只对超级管理员显示，搜索、进度、回刷控制接口都在后端强制校验超级管理员权限；POST 同时校验 CSRF。支持英文题面片段、图片上传及 Ctrl/Cmd+V 粘贴截图，返回最多 20 个候选题、题面摘要和原题链接。
+“搜题”入口只对超级管理员显示，搜索、进度、回刷控制接口都在后端强制校验超级管理员权限；POST 同时校验 CSRF。支持英文题面片段、粘贴截图按钮、Ctrl/Cmd+V 粘贴截图及拖拽图片，返回最多 20 个候选题、题面摘要和原题链接。
 
 文本采用 SQLite FTS5 倒排索引、BM25 排序及词前缀匹配。截图用本地 Tesseract OCR 提取英文，再和题面插图的局部灰度向量余弦相似度结果融合。向量存储在 SQLite，NumPy 分批进行精确相似度计算，不需要 ES、Milvus、GPU、付费接口或模型下载。相似度是匹配指标，不是正确概率；纯图案、短裁剪、OCR 识别错误和易／难版本仍需人工核对。当前图像描述符是轻量视觉特征，不是语义模型；超大插图库可以后续替换成 ANN 索引。
 
@@ -111,3 +111,21 @@ python3 scripts/backfill_search.py
 ```
 
 本地 macOS 可用 `brew install tesseract` 安装 OCR；Linux 可安装 `tesseract-ocr` 和 `tesseract-ocr-eng`。代码的核心游戏仍可直接运行，图片搜索需要安装依赖；生产环境推荐重建 Docker 镜像后使用。
+
+### GitHub 题库备份与恢复
+
+公开搜索数据以 `catalog/search-corpus.jsonl.gz` 保存在 Git 中，包含题面、题号、比赛元数据、局部图像向量和已完成的比赛标记，不包含账户、会话、投稿、运行时设置或错误日志。应用启动时若搜索库为空，会自动恢复这份快照，再从未完成的比赛继续回刷；已有搜索库不会被快照覆盖。
+
+生成最新公开数据快照：
+
+```bash
+python3 scripts/export_search.py
+```
+
+生产容器可导出到持久卷后下载并提交 Git：
+
+```bash
+docker compose exec -T app python scripts/export_search.py --output /data/search-corpus.jsonl.gz
+```
+
+快照采用一致的 SQLite 读事务和原子文件替换，同一份数据重复导出的文件内容一致。全量回刷结束后应再导出并推送最新快照；版本化快照用于公开题库恢复，账户数据库仍需单独备份。

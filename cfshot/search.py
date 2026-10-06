@@ -177,8 +177,11 @@ def search(text='', image=None):
             expression = ' OR '.join('"'+t+'"*' for t in tokens)
             rows = db.execute('''SELECT rowid,bm25(fragments) rank FROM fragments
                 WHERE fragments MATCH ? ORDER BY rank LIMIT 100''',(expression,)).fetchall()
+            best_strength = max(1e-12, -rows[0]['rank']) if rows else 1
+            text_weight = 3 if len(tokens) >= 8 else 1
             for rank,row in enumerate(rows):
-                ranks[row['rowid']] = {'textRank':rank+1,'score':1/(60+rank+1)}
+                strength = max(0, -row['rank']) / best_strength
+                ranks[row['rowid']] = {'textRank':rank+1,'score':text_weight*strength/(60+rank+1)}
         if query_vectors:
             import numpy as np
             query_matrix = np.asarray(query_vectors, dtype=np.float32)

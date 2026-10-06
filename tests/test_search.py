@@ -60,6 +60,14 @@ class SearchTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_statement('<p>Checking your browser</p>')
 
+    def test_long_ocr_fragment_outweighs_generic_visual_layout(self):
+        words = 'uniquely identifying banking statement compound interest deposits double every single day'
+        with search.connect() as db:
+            search.upsert(db,30,'A','Original','Round',100,words)
+            search.upsert(db,31,'B','Distractor','Round',100,'every single day',[[1.0]+[0.0]*63])
+        with patch.object(search,'decode_image',return_value=b'image'), patch.object(search,'visual_vectors',return_value=[[1.0]+[0.0]*63]), patch.object(search,'ocr',return_value=words):
+            self.assertEqual(search.search(image='image')['results'][0]['contest'],30)
+
     def test_worker_lock_and_pause_are_shared_across_connections(self):
         from cfshot.search_crawler import Fetcher
         self.assertFalse(search.worker_running())
@@ -75,6 +83,32 @@ class SearchTest(unittest.TestCase):
             Fetcher(stop, controlled=True).fetch('https://codeforces.com/api/contest.list')
         self.assertTrue(stop.is_set())
         search._STOP.clear()
+
+    def test_public_snapshot_round_trip_and_existing_data_protection(self):
+        import gzip
+        from cfshot.search_snapshot import export_snapshot, restore_snapshot_if_empty
+        snapshot = Path(self.folder.name) / 'corpus.jsonl.gz'
+        with search.connect() as db:
+            db.execute("INSERT INTO jobs(contest,name,started,state) VALUES(2200,'Round',100,'done')")
+            db.execute("INSERT INTO settings VALUES('private_runtime_value','do-not-export')")
+            search.upsert(db,2200,'A','Title','Round',100,'A special permutation with unique constraints.',[[1.0]+[0.0]*63])
+        self.assertEqual(export_snapshot(snapshot),1)
+        first = snapshot.read_bytes()
+        self.assertEqual(export_snapshot(snapshot),1)
+        self.assertEqual(first,snapshot.read_bytes())
+        with gzip.open(snapshot,'rt') as archive:
+            self.assertNotIn('do-not-export',archive.read())
+        self.assertEqual(restore_snapshot_if_empty(snapshot),0)
+        with search.connect() as db:
+            db.execute('DELETE FROM documents')
+            db.execute('DELETE FROM fragments')
+            db.execute('DELETE FROM visuals')
+            db.execute('DELETE FROM jobs')
+        self.assertEqual(restore_snapshot_if_empty(snapshot),1)
+        self.assertEqual(search.search('special permutation')['results'][0]['contest'],2200)
+        with search.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM visuals').fetchone()[0],1)
+            self.assertEqual(db.execute('SELECT state FROM jobs WHERE contest=2200').fetchone()[0],'done')
 
     def test_catalog_orders_by_time_and_resumes_every_problem(self):
         class Fetcher:

@@ -339,3 +339,9 @@ body.dialog-open { overflow: hidden; }
   .room-code { font-size: 28px; }
   .top-score { display: none; }
 }
+
+.search-paste-controls { display: grid; justify-items: start; gap: 8px; }
+.search-paste-controls p { margin: 0; }
+.search-drop-zone { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; border: 2px dashed var(--line, #aab4b8); background: #f7f8f8; color: #657077; text-align: center; }
+.search-drop-zone strong { color: #1e262a; font-size: 18px; }
+.search-drop-zone:focus-visible { outline: 2px solid #078c83; outline-offset: 3px; }

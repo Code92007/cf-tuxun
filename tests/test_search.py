@@ -65,7 +65,7 @@ class SearchTest(unittest.TestCase):
         with search.connect() as db:
             search.upsert(db,30,'A','Original','Round',100,words)
             search.upsert(db,31,'B','Distractor','Round',100,'every single day',[[1.0]+[0.0]*63])
-        with patch.object(search,'decode_image',return_value=b'image'), patch.object(search,'visual_vectors',return_value=[[1.0]+[0.0]*63]), patch.object(search,'ocr',return_value=words):
+        with patch.object(search,'decode_image',return_value=b'image'), patch.object(search,'visual_vectors',return_value=[[1.0]+[0.0]*63]), patch.object(search,'ocr',return_value=words), patch('cfshot.formula_search.match',return_value=[]), patch('cfshot.illustration_search.match',return_value=[]):
             self.assertEqual(search.search(image='image')['results'][0]['contest'],30)
 
     def test_worker_lock_and_pause_are_shared_across_connections(self):

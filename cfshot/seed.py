@@ -1081,3 +1081,6 @@ SEED_QUESTIONS = [
         ],
     },
 ]
+
+from .reviewed_search_clues import SEARCH_CLUES
+SEED_QUESTIONS += SEARCH_CLUES

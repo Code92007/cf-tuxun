@@ -1,5 +1,7 @@
 """Portable public corpus snapshots; never includes accounts or runtime secrets."""
 import gzip
+import base64
+import hashlib
 import json
 import os
 import tempfile
@@ -30,6 +32,10 @@ def export_snapshot(output=DEFAULT_SNAPSHOT):
                 record = dict(row)
                 ident = record.pop('id')
                 record['vectors'] = [json.loads(v[0]) for v in db.execute('SELECT vector FROM visuals WHERE document=? ORDER BY rowid', (ident,))]
+                record['formulas'] = [{'tex':r['tex'],'image':base64.b64encode(r['image']).decode()} for r in db.execute('SELECT tex,image FROM formula_images WHERE document=? ORDER BY id',(ident,))]
+                record['formulaIndexed'] = db.execute('SELECT 1 FROM formula_jobs WHERE document=?',(ident,)).fetchone() is not None
+                record['illustrations'] = [base64.b64encode(r[0]).decode() for r in db.execute('SELECT image FROM illustration_images WHERE document=? ORDER BY id',(ident,))]
+                record['illustrationIndexed'] = db.execute('SELECT 1 FROM illustration_jobs WHERE document=?',(ident,)).fetchone() is not None
                 write({'type':'document', **record})
                 count += 1
         os.replace(temporary, output)
@@ -59,6 +65,13 @@ def restore_snapshot_if_empty(source=DEFAULT_SNAPSHOT):
                         (record['contest'],record['name'],record['started'],record['state']))
                 elif kind == 'document':
                     upsert(db,record['contest'],record['problem'],record['title'],record['contest_name'],record['started'],record['body'],record['vectors'])
+                    ident = db.execute('SELECT id FROM documents WHERE contest=? AND problem=?',(record['contest'],record['problem'])).fetchone()[0]
+                    db.executemany('INSERT INTO formula_images(document,tex,image) VALUES(?,?,?)',[(ident,r['tex'],base64.b64decode(r['image'],validate=True)) for r in record.get('formulas',[])])
+                    if record.get('formulaIndexed'):
+                        db.execute('INSERT OR REPLACE INTO formula_jobs(document,body_hash,error) VALUES(?,?,?)',(ident,hashlib.sha256(record['body'].encode()).hexdigest(),''))
+                    db.executemany('INSERT INTO illustration_images(document,image) VALUES(?,?)',[(ident,base64.b64decode(raw,validate=True)) for raw in record.get('illustrations',[])])
+                    if record.get('illustrationIndexed'):
+                        db.execute('INSERT OR REPLACE INTO illustration_jobs(document) VALUES(?)',(ident,))
                     count += 1
                 else:
                     raise ValueError('Unknown search snapshot record')

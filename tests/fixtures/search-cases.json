@@ -1,0 +1,147 @@
+[
+  {
+    "answer": "2246E",
+    "image": "static/questions/2246E-search.png",
+    "ocr": "o(v, 2) = vee ty=&\nmy Vela ty =|.",
+    "accepted": [
+      "2246E"
+    ]
+  },
+  {
+    "answer": "2170C",
+    "image": "static/questions/2170C-search.png",
+    "ocr": "ol<y<a2<k.\ne there exists an index z\n© there exists an index 7",
+    "accepted": [
+      "2170C"
+    ]
+  },
+  {
+    "answer": "2169B",
+    "image": "static/questions/2169B-search.png",
+    "ocr": "he is carried to the neighboring cell in the direction of the current.",
+    "accepted": [
+      "2169B"
+    ]
+  },
+  {
+    "answer": "2201C",
+    "image": "static/questions/2201C-search.jpg",
+    "ocr": "$1: changes S to\"() ()\"\n\nSy: changes S to\"() ()\"\n\nS3: changes S to\"() ()\"\n\nS4: changes S to\"() ()\"\nS,S3: changes S to\"() ()\";\nS_S3: changes S to\"(())\";\nS_S4: changes S to\"() ()\";\nS1S_S3: changes S to\"(())\".",
+    "accepted": [
+      "2201C"
+    ]
+  },
+  {
+    "answer": "2180B",
+    "image": "static/questions/2180B-search.png",
+    "ocr": "Q1,@2,.-.,@p (1 < |a;| < 4000),",
+    "accepted": [
+      "2180B"
+    ]
+  },
+  {
+    "answer": "2192D",
+    "image": "static/questions/2192D-search.png",
+    "ocr": "d(u,p) = land d(u,r) = d(p,r) +1",
+    "accepted": [
+      "2192D"
+    ]
+  },
+  {
+    "answer": "2164D",
+    "image": "static/questions/2164D-search.png",
+    "ocr": "Kuax",
+    "accepted": [
+      "2164D"
+    ]
+  },
+  {
+    "answer": "2169D2",
+    "image": "static/questions/2169D2-search.png",
+    "ocr": "91\n#1\n91",
+    "accepted": [
+      "2169D1",
+      "2169D2"
+    ]
+  },
+  {
+    "answer": "2161C",
+    "image": "static/questions/2161C-search.png",
+    "ocr": "12\n\n1222221111\n\n5\n\n22225\n\n53\n115212531021 22\n1\n\n1\n\n@\n\na\n\n@\n\n44.321\n\n503499\n\n53473 42894 80 57156 42801 6",
+    "accepted": [
+      "2161C"
+    ]
+  },
+  {
+    "answer": "2122D",
+    "image": "static/questions/2122D-search.png",
+    "ocr": "one of the following:\n* wait one second,\n* move the token through the (¢ mod",
+    "accepted": [
+      "2122D"
+    ]
+  },
+  {
+    "answer": "2156E",
+    "image": "static/questions/2156E-search.png",
+    "ocr": "with Hao going first.",
+    "accepted": [
+      "2156E"
+    ]
+  },
+  {
+    "answer": "2137G",
+    "image": "static/questions/2137G-search.png",
+    "ocr": "update the color of nor\nIf a fun graph game is",
+    "accepted": [
+      "2137G"
+    ]
+  },
+  {
+    "answer": "2225C",
+    "image": "static/questions/2225C-search.png",
+    "ocr": "e the cells in each pair have the same color;\ne the cells in each pair share a side.",
+    "accepted": [
+      "2225C"
+    ]
+  },
+  {
+    "answer": "2124E",
+    "image": "static/questions/2124E-search.png",
+    "ocr": "wed to do the following operation:\nb; = bis + iyo +... + Bp. Thatis,",
+    "accepted": [
+      "2124E"
+    ]
+  },
+  {
+    "answer": "2127A",
+    "image": "static/questions/2127A-search.png",
+    "ocr": "° mex((a1, @2, a3]) = max([a;, @2,@3}) _ min((a;, Qo, a3}).\n° mex([a2, a3, a4]) = max((@2, a3, @4]) ~~ min((a2, a3, a4), but\n+ mex({@3, a4, @5]) A max((a3, a4, a5)) — min([a3, @4, a5).",
+    "accepted": [
+      "2127A"
+    ]
+  },
+  {
+    "answer": "2146D2",
+    "image": "static/questions/2146D2-search.png",
+    "ocr": "The difference between the versions is that in this version,0 <I <r< =",
+    "accepted": [
+      "2146D2"
+    ]
+  },
+  {
+    "answer": "2168C",
+    "image": "static/questions/2168C-search.png",
+    "ocr": "First run: The input contains four test cases with x = 1,20, 50, 32 768. According to some strategy agreed upon beforehand, Alice\nsends @ to Bob for x = 1, the set {13, 4, 9} for x = 20, the set {1, 7, 4, 2} for x = 50, and {14, 17, 1, 6, 2, 19, 20, 8, 7, 18} for\n32 768.\n\nSecond run: Note that the test cases from the first run are shuffled. They are given in the order [20, 32 768, 1, 50].",
+    "accepted": [
+      "2168C"
+    ]
+  },
+  {
+    "answer": "2193H",
+    "image": "static/questions/2193H-search.png",
+    "ocr": "Example\ninput\n\n5\n\n3\n\n124\n12\n\n23\n\n4\n\n3421\n12\n\n23\n\n34\n\n6\n965174\n12\n\n23\n\n24\n\n35\n\n46\n\n5\n21112\n21\n\n32\n\n24\n\n54\n\n5\n15379\n12\n\n23\n\n34\n\n45\noutput\nNO\n\nYES\n2314\nNO\n\nYES\n15234\nYES\n24153",
+    "accepted": [
+      "2193H"
+    ]
+  }
+]

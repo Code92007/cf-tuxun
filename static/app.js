@@ -1530,7 +1530,8 @@ async function loadSearchStatus() {
   if (!state.user?.isSuperAdmin) return;
   try {
     const s = await api("/api/admin/search/status");
-    $("#search-status").textContent = `${s.running ? "回刷中" : s.enabled ? "已启用，等待续刷" : "已暂停"} · 已入库 ${s.documents} 题 · 图像向量 ${s.visuals} 条\n比赛：完成 ${s.jobs.done || 0}，待处理 ${s.jobs.pending || 0}，处理中 ${s.jobs.running || 0}，失败待重试 ${s.jobs.failed || 0}\n${s.ocrAvailable ? "截图文字识别可用" : "未安装 OCR，截图仅支持插图相似度匹配"}${s.lastError ? "\n目录错误：" + s.lastError : ""}\n${s.errors.map(e => `${e.contest} ${e.name}: ${e.error}`).join("\n")}`;
+    $("#search-status").textContent = `${s.running ? "回刷中" : s.enabled ? "已启用，等待续刷" : "已暂停"} · 已入库 ${s.documents} 题 · 图像向量 ${s.visuals} 条 · 公式 ${s.formulas || 0} 条${s.formulaPending ? "（还有 " + s.formulaPending + " 题待索引）" : ""}\n比赛：完成 ${s.jobs.done || 0}，待处理 ${s.jobs.pending || 0}，处理中 ${s.jobs.running || 0}，失败待重试 ${s.jobs.failed || 0}\n${s.ocrAvailable ? "截图文字识别可用" : "未安装 OCR，截图仅支持插图相似度匹配"}${s.lastError ? "\n目录错误：" + s.lastError : ""}${s.formulaError ? "\n公式索引：" + s.formulaError : ""}\n${s.errors.map(e => `${e.contest} ${e.name}: ${e.error}`).join("\n")}`;
+    $("#search-status").textContent += `\n原始插图 ${s.illustrations || 0} 张，待补抓 ${s.illustrationPending || 0} 题${s.illustrationError ? "\n插图补抓：" + s.illustrationError : ""}`;
   } catch (e) { toast(e.message, "error"); }
 }
 async function setSearchImage(file) {
@@ -1576,7 +1577,7 @@ $("#search-form").addEventListener("submit", async e => {
     const s = await api("/api/admin/search", {method:"POST", body:{text:$("#search-text").value, image:searchImage || undefined}});
     if (s.recognizedText && !$("#search-text").value.trim()) { $("#search-text").value = s.recognizedText; searchAutoText = s.recognizedText; }
     $("#search-message").textContent = `${s.results.length ? "找到 " + s.results.length + " 个候选" : "暂无匹配；请检查截图文字或回刷进度"}${s.warnings.length ? " · " + s.warnings.join("；") : ""}`;
-    $("#search-results").innerHTML = s.results.map(r => `<article class="submission-item"><div class="submission-copy"><strong><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${r.contest}${escapeHtml(r.problem)} · ${escapeHtml(r.title)}</a></strong><span>${escapeHtml(r.contest_name)}${r.imageSimilarity !== undefined ? " · 图像相似度 " + (r.imageSimilarity * 100).toFixed(0) + "%" : ""}</span><p>${escapeHtml(r.snippet)}</p></div></article>`).join("");
+    $("#search-results").innerHTML = s.results.map(r => `<article class="search-result-card"><div class="search-result-copy"><strong><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${r.contest}${escapeHtml(r.problem)} · ${escapeHtml(r.title)}</a></strong><span>${escapeHtml(r.contest_name)}${r.formulaSimilarity !== undefined ? " · 公式相似度 " + (r.formulaSimilarity * 100).toFixed(0) + "%" : r.imageSimilarity !== undefined ? " · 图像相似度 " + (r.imageSimilarity * 100).toFixed(0) + "%" : ""}</span><p>${escapeHtml(r.snippet)}</p></div></article>`).join("");
   } catch (err) { $("#search-message").textContent = err.message; }
   finally { button.disabled = false; }
 });

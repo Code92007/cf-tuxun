@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="./styles.css?v=15">
+  <link rel="stylesheet" href="./styles.css?v=16">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -358,7 +358,7 @@
             <button class="primary" type="submit">搜题</button>
           </form>
           <p id="search-message" role="status"></p>
-          <div id="search-results" class="submission-list"></div>
+          <div id="search-results" class="search-results"></div>
           <div class="section-head"><h3>历史比赛回刷</h3><button id="search-start" class="secondary" type="button">开始／继续回刷</button><button id="search-pause" class="text-btn" type="button">暂停</button></div>
           <p>覆盖 contest 区已结束比赛的全部题目，优先最近比赛；自动续刷，失败项延迟重试。</p>
           <pre id="search-status" style="white-space:pre-wrap" role="status"></pre>
@@ -404,6 +404,6 @@
       <div class="confirm-actions"><button id="confirm-cancel" class="secondary" type="button">取消</button><button id="confirm-accept" class="danger-btn" type="button">确认</button></div>
     </section>
   </div>
-  <script src="./app.js?v=15" defer></script>
+  <script src="./app.js?v=16" defer></script>
 </body>
 </html>

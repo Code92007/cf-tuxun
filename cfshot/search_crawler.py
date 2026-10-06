@@ -86,15 +86,48 @@ def crawl_contest(fetcher, db, job):
         url = f"https://codeforces.com/contest/{contest}/problem/{problem['index']}?locale=en"
         body,images = parse_statement(fetcher.fetch(url))
         vectors = []
+        originals = []
         for source in images:
             image_url = urljoin(url,source)
             parsed = urlparse(image_url)
             if parsed.scheme!='https' or parsed.hostname not in {'codeforces.com','codeforces.org','espresso.codeforces.com','sta.codeforces.com','sta.codeforces.org'}:
                 continue
             # Asset failures keep the contest pending so it is retried, not silently lost.
-            vectors.extend(visual_vectors(fetcher.fetch(image_url,binary=True)))
+            raw = fetcher.fetch(image_url,binary=True)
+            vectors.extend(visual_vectors(raw))
+            originals.append(raw)
         with db:
             upsert(db,contest,problem['index'],problem['name'],job['name'],job['started'],body,vectors)
+            from .illustration_search import store
+            ident = db.execute('SELECT id FROM documents WHERE contest=? AND problem=?',(contest,problem['index'])).fetchone()[0]
+            store(db,ident,originals)
+
+
+def backfill_illustration(fetcher, db, row=None):
+    row = row or db.execute('''SELECT d.id,d.url FROM documents d
+        WHERE EXISTS(SELECT 1 FROM visuals v WHERE v.document=d.id)
+        AND NOT EXISTS(SELECT 1 FROM illustration_jobs j WHERE j.document=d.id)
+        AND NOT EXISTS(SELECT 1 FROM illustration_retries r WHERE r.document=d.id AND r.retry_at>?)
+        ORDER BY d.started DESC,d.contest DESC LIMIT 1''',(time.time(),)).fetchone()
+    if row is None:
+        return
+    originals=[]
+    try:
+        _,images = parse_statement(fetcher.fetch(row['url']+'?locale=en'))
+        for source in images:
+            url=urljoin(row['url'],source)
+            parsed=urlparse(url)
+            if parsed.scheme=='https' and parsed.hostname in {'codeforces.com','codeforces.org','espresso.codeforces.com','sta.codeforces.com','sta.codeforces.org'}:
+                originals.append(fetcher.fetch(url,binary=True))
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        with db:
+            db.execute('INSERT OR REPLACE INTO illustration_retries VALUES(?,?,?)',(row['id'],time.time()+3600,str(exc)[:500]))
+        raise
+    from .illustration_search import store
+    with db:
+        store(db,row['id'],originals)
 
 
 def run(stop):
@@ -106,12 +139,31 @@ def run(stop):
 def _run(stop):
     fetcher = Fetcher(stop, controlled=True)
     catalog_at = 0
+    illustration_retry = 0
     while not stop.is_set():
         try:
+            from .formula_search import backfill
+            try:
+                backfill(stop)
+                with connect() as db:
+                    db.execute("INSERT OR REPLACE INTO settings VALUES('formula_error','')")
+            except (RuntimeError, ImportError, OSError) as exc:
+                with connect() as db:
+                    db.execute("INSERT OR REPLACE INTO settings VALUES('formula_error',?)",(str(exc)[:500],))
             with connect() as db:
                 enabled = db.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()
                 if enabled and enabled[0]=='0':
                     return
+                if time.time() >= illustration_retry:
+                    try:
+                        backfill_illustration(fetcher,db)
+                        db.execute("INSERT OR REPLACE INTO settings VALUES('illustration_error','')")
+                    except InterruptedError:
+                        raise
+                    except Exception as exc:
+                        illustration_retry = time.time()+300
+                        db.execute("INSERT OR REPLACE INTO settings VALUES('illustration_error',?)",(str(exc)[:500],))
+                    db.commit()
                 if time.time()-catalog_at>3600:
                     sync_catalog(fetcher,db)
                     catalog_at = time.time()

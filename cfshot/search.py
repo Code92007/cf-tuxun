@@ -60,6 +60,17 @@ def connect():
       attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0,
       error TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS formula_images(id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document INTEGER NOT NULL,tex TEXT NOT NULL,image BLOB NOT NULL);
+    CREATE INDEX IF NOT EXISTS formula_images_document ON formula_images(document);
+    CREATE TABLE IF NOT EXISTS formula_jobs(document INTEGER PRIMARY KEY,
+      body_hash TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS illustration_images(id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document INTEGER NOT NULL,image BLOB NOT NULL);
+    CREATE INDEX IF NOT EXISTS illustration_images_document ON illustration_images(document);
+    CREATE TABLE IF NOT EXISTS illustration_jobs(document INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS illustration_retries(document INTEGER PRIMARY KEY,
+      retry_at REAL NOT NULL,error TEXT NOT NULL);
     ''')
     try:
         yield db
@@ -81,6 +92,10 @@ def upsert(db, contest, problem, title, name, started, body, vectors=()):
     db.execute('DELETE FROM fragments WHERE rowid=?',(ident,))
     db.execute('INSERT INTO fragments(rowid,title,body) VALUES(?,?,?)',(ident,title,body))
     db.execute('DELETE FROM visuals WHERE document=?',(ident,))
+    db.execute('DELETE FROM formula_images WHERE document=?',(ident,))
+    db.execute('DELETE FROM formula_jobs WHERE document=?',(ident,))
+    db.execute('DELETE FROM illustration_images WHERE document=?',(ident,))
+    db.execute('DELETE FROM illustration_jobs WHERE document=?',(ident,))
     db.executemany('INSERT INTO visuals VALUES(?,?)',[(ident,json.dumps(v)) for v in vectors])
 
 
@@ -126,6 +141,11 @@ def ocr(raw):
     if not shutil.which('tesseract'):
         raise ValueError('截图识别需要安装 Tesseract（Docker 镜像已包含）；可先使用文字检索')
     image = open_image(raw)
+    if image.height < 80:
+        from PIL import Image
+        scale = min(3,2400/image.width)
+        if scale>1:
+            image=image.resize((round(image.width*scale),round(image.height*scale)),Image.Resampling.LANCZOS)
     with tempfile.TemporaryDirectory(prefix='cfsnap-ocr-') as folder:
         path = Path(folder)/'query.png'
         image.save(path)
@@ -159,6 +179,7 @@ def search(text='', image=None):
     recognized = ''
     query_vectors = []
     warnings = []
+    raw = None
     if image:
         raw = decode_image(image)
         query_vectors = visual_vectors(raw)
@@ -173,6 +194,16 @@ def search(text='', image=None):
         raise ValueError('请提供可辨认的文字或图片')
     with connect() as db:
         ranks = {}
+        if text:
+            from .text_search import match as phrase_match
+            for rank,(ident,similarity) in enumerate(phrase_match(db,text)):
+                if similarity > 0.025:
+                    ranks[ident] = {'score':8*similarity/(60+rank+1),'phraseSimilarity':round(similarity,3)}
+            from .text_search import sample_match
+            for rank,(ident,similarity) in enumerate(sample_match(db,text)):
+                item = ranks.setdefault(ident,{'score':0})
+                item['score'] += 12*similarity/(60+rank+1)
+                item['sampleSimilarity'] = round(similarity,3)
         if tokens:
             expression = ' OR '.join('"'+t+'"*' for t in tokens)
             rows = db.execute('''SELECT rowid,bm25(fragments) rank FROM fragments
@@ -181,7 +212,9 @@ def search(text='', image=None):
             text_weight = 3 if len(tokens) >= 8 else 1
             for rank,row in enumerate(rows):
                 strength = max(0, -row['rank']) / best_strength
-                ranks[row['rowid']] = {'textRank':rank+1,'score':text_weight*strength/(60+rank+1)}
+                item = ranks.setdefault(row['rowid'],{'score':0})
+                item['textRank'] = rank+1
+                item['score'] += text_weight*strength/(60+rank+1)
         if query_vectors:
             import numpy as np
             query_matrix = np.asarray(query_vectors, dtype=np.float32)
@@ -200,6 +233,18 @@ def search(text='', image=None):
                 item = ranks.setdefault(ident,{'score':0})
                 item['score'] += 1/(60+rank+1)
                 item['imageSimilarity'] = round(similarity,3)
+        if raw:
+            from .illustration_search import match as illustration_match
+            for rank,(ident,similarity) in enumerate(illustration_match(raw)):
+                item = ranks.setdefault(ident,{'score':0})
+                item['score'] += 12*similarity**6/(60+rank+1)
+                item['imageSimilarity'] = round(similarity,3)
+            from .formula_search import match
+            for rank,(ident,similarity) in enumerate(match(raw)):
+                item = ranks.setdefault(ident,{'score':0})
+                weight = 4 if len(tokens)<8 else 0.5
+                item['score'] += weight*similarity**4/(60+rank+1)
+                item['formulaSimilarity'] = round(similarity,3)
         results = []
         for ident,score in sorted(ranks.items(),key=lambda v:-v[1]['score'])[:20]:
             row = dict(db.execute('SELECT * FROM documents WHERE id=?',(ident,)).fetchone())
@@ -218,6 +263,13 @@ def status():
                     if db.execute("SELECT value FROM settings WHERE key='enabled'").fetchone() else False,
                 'documents':db.execute('SELECT count(*) FROM documents').fetchone()[0],
                 'visuals':db.execute('SELECT count(*) FROM visuals').fetchone()[0],
+                'formulas':db.execute('SELECT count(*) FROM formula_images').fetchone()[0],
+                'formulaPending':db.execute('SELECT count(*) FROM documents d LEFT JOIN formula_jobs j ON j.document=d.id WHERE j.document IS NULL').fetchone()[0],
+                'formulaError':(db.execute("SELECT value FROM settings WHERE key='formula_error'").fetchone() or [''])[0],
+                'illustrations':db.execute('SELECT count(*) FROM illustration_images').fetchone()[0],
+                'illustrationPending':db.execute('''SELECT count(*) FROM documents d WHERE EXISTS(SELECT 1 FROM visuals v WHERE v.document=d.id)
+                    AND NOT EXISTS(SELECT 1 FROM illustration_jobs j WHERE j.document=d.id)''').fetchone()[0],
+                'illustrationError':(db.execute("SELECT value FROM settings WHERE key='illustration_error'").fetchone() or [''])[0],
                 'jobs':{r['state']:r['n'] for r in db.execute('SELECT state,count(*) n FROM jobs GROUP BY state')},
                 'errors':[dict(r) for r in db.execute("SELECT contest,name,error,retry_at FROM jobs WHERE error!='' ORDER BY started DESC LIMIT 10")],
                 'lastError': (db.execute("SELECT value FROM settings WHERE key='last_error'").fetchone() or [''])[0],

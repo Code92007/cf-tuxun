@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Offline MathJax formula renderer for the public CF search index",
+  "dependencies": { "mathjax-full": "3.2.2" }
+}

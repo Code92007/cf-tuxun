@@ -18,6 +18,32 @@ _CACHE = None
 _ROOT = Path(__file__).resolve().parents[1]
 
 
+def partial_formulas(tex):
+    depth=0
+    equals=None
+    plus=[]
+    for i,char in enumerate(tex):
+        if char in '{([':
+            depth+=1
+        elif char in '})]':
+            depth=max(0,depth-1)
+        elif depth==0 and char=='=':
+            equals=i
+            break
+        elif depth==0 and char=='+':
+            plus.append(i)
+    if equals is not None and plus:
+        tail=tex[plus[-1]+1:equals].strip()
+        right=tex[equals+1:].strip()
+        if tail and len(right)>=10:
+            yield tail+'='+right
+            yield right
+
+
+def body_hash(body):
+    return hashlib.sha256(('formula-v2\0'+body).encode()).hexdigest()
+
+
 def formulas(body):
     seen = set()
     for match in _PATTERN.finditer(body):
@@ -28,6 +54,10 @@ def formulas(body):
             continue
         seen.add(tex)
         yield tex, match.group(1) is not None
+        for part in partial_formulas(tex):
+            if part not in seen:
+                seen.add(part)
+                yield part,False
 
 
 class Renderer:
@@ -112,7 +142,7 @@ def coarse_descriptor(raw):
 
 
 def index_document(db, document, body, renderer):
-    body_hash = hashlib.sha256(body.encode()).hexdigest()
+    digest = body_hash(body)
     errors = []
     images = []
     for tex, display in formulas(body):
@@ -120,14 +150,14 @@ def index_document(db, document, body, renderer):
             raw = renderer.render(tex,display)
             thumb = thumbnail(raw)
             if thumb:
-                images.append((document,tex,thumb))
+                images.append((document,tex,thumb,coarse_descriptor(thumb).tobytes()))
         except ValueError as exc:
             errors.append(str(exc))
     with db:
         db.execute('DELETE FROM formula_images WHERE document=?',(document,))
-        db.executemany('INSERT INTO formula_images(document,tex,image) VALUES(?,?,?)',images)
+        db.executemany('INSERT INTO formula_images(document,tex,image,coarse) VALUES(?,?,?,?)',images)
         db.execute('INSERT OR REPLACE INTO formula_jobs(document,body_hash,error) VALUES(?,?,?)',
-                   (document,body_hash,'; '.join(errors)[:500]))
+                   (document,digest,'; '.join(errors)[:500]))
     return len(images)
 
 
@@ -136,6 +166,28 @@ def backfill(stop=None):
     stop = stop or _STOP
     count = 0
     with _RENDER_LOCK, Renderer() as renderer, connect() as db:
+        prepare_vectors(db,stop)
+        existing=db.execute('SELECT d.id,d.body,j.body_hash FROM documents d JOIN formula_jobs j ON j.document=d.id').fetchall()
+        for row in existing:
+            if stop.is_set():
+                return count
+            digest=body_hash(row['body'])
+            if row['body_hash']==digest:
+                continue
+            known={r[0] for r in db.execute('SELECT tex FROM formula_images WHERE document=?',(row['id'],))}
+            for tex,display in formulas(row['body']):
+                if tex in known:
+                    continue
+                try:
+                    thumb=thumbnail(renderer.render(tex,display))
+                    if thumb:
+                        with db:
+                            db.execute('INSERT INTO formula_images(document,tex,image,coarse) VALUES(?,?,?,?)',(row['id'],tex,thumb,coarse_descriptor(thumb).tobytes()))
+                        count+=1
+                except ValueError:
+                    pass
+            with db:
+                db.execute('UPDATE formula_jobs SET body_hash=? WHERE document=?',(digest,row['id']))
         rows = db.execute('''SELECT d.id,d.body FROM documents d LEFT JOIN formula_jobs j ON j.document=d.id
             WHERE j.document IS NULL ORDER BY d.started DESC,d.contest DESC''').fetchall()
         for row in rows:
@@ -145,12 +197,41 @@ def backfill(stop=None):
     return count
 
 
+def prepare_vectors(db,stop=None):
+    while stop is None or not stop.is_set():
+        rows=db.execute('SELECT id,image FROM formula_images WHERE coarse IS NULL LIMIT 256').fetchall()
+        if not rows:
+            return
+        with db:
+            db.executemany('UPDATE formula_images SET coarse=? WHERE id=?',[(coarse_descriptor(r['image']).tobytes(),r['id']) for r in rows])
+
+
 def match(raw, limit=100):
     import numpy as np
     from PIL import Image
     global _CACHE
     thumbs = [thumbnail(raw)]
-    with Image.open(io.BytesIO(raw)) as image:
+    with open_image(raw) as image:
+        gray=np.asarray(image.convert('L'))
+        if float(gray.mean())<128:
+            gray=255-gray
+        ink_rows=np.flatnonzero((gray<170).any(axis=1))
+        if len(ink_rows):
+            groups=np.split(ink_rows,np.where(np.diff(ink_rows)>10)[0]+1)
+            if len(groups)>1:
+                for group in groups:
+                    if group[-1]-group[0]<5:
+                        continue
+                    cropped=image.crop((0,max(0,int(group[0])-3),image.width,min(image.height,int(group[-1])+4)))
+                    buffer=io.BytesIO();cropped.save(buffer,format='PNG')
+                    thumbs.append(thumbnail(buffer.getvalue()))
+                    if cropped.width/cropped.height>8:
+                        # A formula can be followed by ordinary prose on the
+                        # same line ("That is, ..."). Compare prefix regions.
+                        for fraction in (0.75,0.8,0.85):
+                            prefix=cropped.crop((0,0,round(cropped.width*fraction),cropped.height))
+                            buffer=io.BytesIO();prefix.save(buffer,format='PNG')
+                            thumbs.append(thumbnail(buffer.getvalue()))
         # A long prose line can end in a small constraint. Compare suffix
         # regions independently so the bold heading does not drown out math.
         if image.height<80 and image.width/image.height>10:
@@ -167,9 +248,17 @@ def match(raw, limit=100):
         generation = (search.db_path(), *db.execute('SELECT count(*),coalesce(max(id),0) FROM formula_images').fetchone())
         with _CACHE_LOCK:
             if _CACHE is None or _CACHE[0]!=generation:
-                rows = db.execute('SELECT document,image FROM formula_images ORDER BY id').fetchall()
-                matrix = np.asarray([coarse_descriptor(r['image']) for r in rows],dtype=np.float32) if rows else np.empty((0,128),dtype=np.float32)
-                _CACHE = (generation,[r['document'] for r in rows],[r['image'] for r in rows],matrix)
+                incremental = _CACHE is not None and _CACHE[0][0]==generation[0] and generation[1]>=_CACHE[0][1]
+                rows = db.execute('SELECT document,image,coarse FROM formula_images WHERE id>? ORDER BY id',(_CACHE[0][2] if incremental else 0,)).fetchall()
+                if incremental and len(rows)!=generation[1]-_CACHE[0][1]:
+                    incremental=False
+                    rows=db.execute('SELECT document,image,coarse FROM formula_images ORDER BY id').fetchall()
+                matrix = np.asarray([np.frombuffer(r['coarse'],dtype=np.float32) if r['coarse'] is not None else coarse_descriptor(r['image']) for r in rows],dtype=np.float32) if rows else np.empty((0,128),dtype=np.float32)
+                documents=[r['document'] for r in rows];images=[r['image'] for r in rows]
+                if incremental:
+                    documents=_CACHE[1]+documents;images=_CACHE[2]+images
+                    matrix=np.vstack((_CACHE[3],matrix))
+                _CACHE = (generation,documents,images,matrix)
             _, documents,images,matrix = _CACHE
     if not len(documents):
         return []

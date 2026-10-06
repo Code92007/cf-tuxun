@@ -68,6 +68,15 @@ class SearchTest(unittest.TestCase):
         with patch.object(search,'decode_image',return_value=b'image'), patch.object(search,'visual_vectors',return_value=[[1.0]+[0.0]*63]), patch.object(search,'ocr',return_value=words), patch('cfshot.formula_search.match',return_value=[]), patch('cfshot.illustration_search.match',return_value=[]):
             self.assertEqual(search.search(image='image')['results'][0]['contest'],30)
 
+    def test_ocr_bounds_ignore_variable_noise_but_keep_magnitude(self):
+        from cfshot.text_search import constraint_match
+        with search.connect() as db:
+            search.upsert(db,10,'A','Original','Round',10,r'Length $$$1 \le |a_i| \le 4000$$$.')
+            search.upsert(db,11,'B','Different bound','Round',11,r'Length $$$1 \le |a_i| \le 400$$$.')
+            search.upsert(db,12,'C','Coincidental sample','Round',12,'Example Output 1 4000')
+            ids=constraint_match(db,'@1,@2 (1 < |a;| < 4000)')
+            self.assertEqual([db.execute('SELECT contest FROM documents WHERE id=?',(i,)).fetchone()[0] for i in ids],[10])
+
     def test_worker_lock_and_pause_are_shared_across_connections(self):
         from cfshot.search_crawler import Fetcher
         self.assertFalse(search.worker_running())

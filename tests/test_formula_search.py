@@ -30,6 +30,36 @@ class FormulaTest(unittest.TestCase):
         self.assertEqual(extracted[-1],(FORMULA,True))
         self.assertFalse(any(tex=='x' for tex,_ in extracted))
 
+    def test_cached_index_follows_additions_and_deletions(self):
+        from cfshot import formula_search
+        raw=FIXTURE.read_bytes()
+        thumb=formula_search.thumbnail(raw)
+        coarse=formula_search.coarse_descriptor(thumb).tobytes()
+        with search.connect() as db:
+            search.upsert(db,1,'A','First','Round',1,'First formula')
+            first=db.execute('SELECT id FROM documents').fetchone()[0]
+            db.execute('INSERT INTO formula_images(document,tex,image,coarse) VALUES(?,?,?,?)',(first,'first',thumb,coarse))
+        self.assertEqual(match(raw)[0][0],first)
+        with search.connect() as db:
+            search.upsert(db,2,'B','Second','Round',2,'Second formula')
+            second=db.execute('SELECT id FROM documents WHERE contest=2').fetchone()[0]
+            db.execute('INSERT INTO formula_images(document,tex,image,coarse) VALUES(?,?,?,?)',(second,'second',thumb,coarse))
+        self.assertEqual({ident for ident,_ in match(raw)},{first,second})
+        with search.connect() as db:
+            db.execute('DELETE FROM formula_images WHERE document=?',(first,))
+        self.assertEqual([ident for ident,_ in match(raw)],[second])
+
+    @unittest.skipUnless(os.environ.get('SEARCH_NODE') or shutil.which('node'),'requires offline MathJax runtime')
+    def test_truncated_equation_with_separate_heading(self):
+        tex=r'b_1+b_2+\ldots+b_i=b_{i+1}+b_{i+2}+\ldots+b_n'
+        with search.connect() as db,Renderer() as renderer:
+            search.upsert(db,2124,'E','Original','Round',1,'The operation is $$$'+tex+'$$$.')
+            row=db.execute('SELECT id,body FROM documents').fetchone()
+            self.assertGreater(index_document(db,row['id'],row['body'],renderer),1)
+        raw=(Path(__file__).resolve().parents[1]/'static/questions/2124E-search.png').read_bytes()
+        self.assertEqual(match(raw)[0][0],row['id'])
+        self.assertGreater(match(raw)[0][1],0.7)
+
     @unittest.skipUnless(os.environ.get('SEARCH_NODE') or shutil.which('node'),'requires offline MathJax runtime')
     def test_real_2246e_screenshot_padding_resize_and_snapshot(self):
         from cfshot.search_snapshot import export_snapshot,restore_snapshot_if_empty

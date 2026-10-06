@@ -24,9 +24,16 @@ def match(db, text, limit=100):
     rows = db.execute('SELECT id,body FROM documents').fetchall()
     hits = []
     frequencies = Counter()
+    first = {}
+    for g in query:
+        first.setdefault(g[0],[]).append(g)
     for row in rows:
-        body = grams(normalize(row['body']))
-        shared = {g:min(count,body[g]) for g,count in query.items() if body[g]}
+        words=normalize(row['body'])
+        shared=Counter()
+        for i,word in enumerate(words):
+            for g in first.get(word,()):
+                if shared[g]<query[g] and tuple(words[i:i+len(g)])==g:
+                    shared[g]+=1
         frequencies.update(shared.keys())
         if shared:
             hits.append((row['id'],shared))
@@ -59,3 +66,31 @@ def sample_match(db, text, limit=40):
         if shared>=0.15:
             scores.append((row['id'],shared))
     return sorted(scores,key=lambda p:-p[1])[:limit]
+
+
+def constraint_signature(text):
+    text=re.sub(r'\d+\s*\^\s*\{?\d+\}?',lambda m: ''.join(re.findall(r'\d+',m[0])),text)
+    text=re.sub(r'\\(?:leq?|lt)\b','<',text)
+    text=re.sub(r'\\(?:geq?|gt)\b','>',text)
+    text=text.replace('≤','<').replace('≥','>').replace('<=','<').replace('>=','>')
+    text=re.sub(r'[a-zA-Z]_(?:\{[^}]*\}|[a-zA-Z0-9])','',text)
+    text=re.sub(r'\\[a-zA-Z]+','',text)
+    numbers=re.findall(r'\d+',text)
+    if len(numbers)<2 or not any(int(n)>=100 for n in numbers) or not re.search(r'[<>]',text):
+        return None
+    return ''.join(re.findall(r'[0-9<>|]',text))
+
+
+def constraint_match(db,text):
+    # Variable OCR is unreliable (a_i may become @;). Numeric bounds and
+    # absolute-value bars distinguish constraints from coincidental samples.
+    snippets=re.findall(r'\([^()\n]*[<>≤≥][^()\n]*\)',text)+text.splitlines()
+    signatures={s for snippet in snippets if (s:=constraint_signature(snippet))}
+    if not signatures:
+        return []
+    matches=[]
+    for row in db.execute('SELECT id,body FROM documents'):
+        expressions=re.findall(r'\${3,6}(.*?)\${3,6}',row['body'],re.S)
+        if any(constraint_signature(tex) in signatures for tex in expressions):
+            matches.append(row['id'])
+    return matches

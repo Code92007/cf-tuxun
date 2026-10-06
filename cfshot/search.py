@@ -61,7 +61,7 @@ def connect():
       error TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS formula_images(id INTEGER PRIMARY KEY AUTOINCREMENT,
-      document INTEGER NOT NULL,tex TEXT NOT NULL,image BLOB NOT NULL);
+      document INTEGER NOT NULL,tex TEXT NOT NULL,image BLOB NOT NULL,coarse BLOB);
     CREATE INDEX IF NOT EXISTS formula_images_document ON formula_images(document);
     CREATE TABLE IF NOT EXISTS formula_jobs(document INTEGER PRIMARY KEY,
       body_hash TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');
@@ -72,6 +72,15 @@ def connect():
     CREATE TABLE IF NOT EXISTS illustration_retries(document INTEGER PRIMARY KEY,
       retry_at REAL NOT NULL,error TEXT NOT NULL);
     ''')
+    if 'coarse' not in {r[1] for r in db.execute('PRAGMA table_info(formula_images)')}:
+        try:
+            db.execute('ALTER TABLE formula_images ADD COLUMN coarse BLOB')
+            db.commit()
+        except sqlite3.OperationalError as exc:
+            if 'duplicate column' not in str(exc):
+                db.close()
+                raise
+    db.execute('CREATE INDEX IF NOT EXISTS formula_images_unprepared ON formula_images(id) WHERE coarse IS NULL')
     try:
         yield db
         db.commit()
@@ -180,6 +189,7 @@ def search(text='', image=None):
     query_vectors = []
     warnings = []
     raw = None
+    numeric_sample = False
     if image:
         raw = decode_image(image)
         query_vectors = visual_vectors(raw)
@@ -196,7 +206,9 @@ def search(text='', image=None):
         ranks = {}
         if text:
             from .text_search import match as phrase_match
-            for rank,(ident,similarity) in enumerate(phrase_match(db,text)):
+            numeric = sum(c.isdigit() for c in text)
+            numeric_sample = numeric>=40 and numeric/max(1,sum(c.isalnum() for c in text))>0.6
+            for rank,(ident,similarity) in enumerate([] if numeric_sample else phrase_match(db,text)):
                 if similarity > 0.025:
                     ranks[ident] = {'score':8*similarity/(60+rank+1),'phraseSimilarity':round(similarity,3)}
             from .text_search import sample_match
@@ -204,6 +216,11 @@ def search(text='', image=None):
                 item = ranks.setdefault(ident,{'score':0})
                 item['score'] += 12*similarity/(60+rank+1)
                 item['sampleSimilarity'] = round(similarity,3)
+            from .text_search import constraint_match
+            for ident in constraint_match(db,text):
+                item = ranks.setdefault(ident,{'score':0})
+                item['score'] += 12/61
+                item['constraintMatch'] = True
         if tokens:
             expression = ' OR '.join('"'+t+'"*' for t in tokens)
             rows = db.execute('''SELECT rowid,bm25(fragments) rank FROM fragments
@@ -234,17 +251,22 @@ def search(text='', image=None):
                 item['score'] += 1/(60+rank+1)
                 item['imageSimilarity'] = round(similarity,3)
         if raw:
-            from .illustration_search import match as illustration_match
-            for rank,(ident,similarity) in enumerate(illustration_match(raw)):
-                item = ranks.setdefault(ident,{'score':0})
-                item['score'] += 12*similarity**6/(60+rank+1)
-                item['imageSimilarity'] = round(similarity,3)
             from .formula_search import match
-            for rank,(ident,similarity) in enumerate(match(raw)):
+            strong_prose = len(tokens)>=12 and any(r.get('phraseSimilarity',0)>0.45 for r in ranks.values())
+            formula_hits = [] if numeric_sample or strong_prose else match(raw)
+            for rank,(ident,similarity) in enumerate(formula_hits):
                 item = ranks.setdefault(ident,{'score':0})
                 weight = 4 if len(tokens)<8 else 0.5
                 item['score'] += weight*similarity**4/(60+rank+1)
                 item['formulaSimilarity'] = round(similarity,3)
+            from .illustration_search import match as illustration_match, colored_ink
+            strong_text = any(r.get('phraseSimilarity',0)>0.3 or r.get('constraintMatch') for r in ranks.values())
+            strong_formula = bool(formula_hits and formula_hits[0][1]>=0.8)
+            need_illustration = len(tokens)<4 and (colored_ink(raw) or not (strong_text or strong_formula))
+            for rank,(ident,similarity) in enumerate(illustration_match(raw) if need_illustration else []):
+                item = ranks.setdefault(ident,{'score':0})
+                item['score'] += 12*similarity**6/(60+rank+1)
+                item['imageSimilarity'] = round(similarity,3)
         results = []
         for ident,score in sorted(ranks.items(),key=lambda v:-v[1]['score'])[:20]:
             row = dict(db.execute('SELECT * FROM documents WHERE id=?',(ident,)).fetchone())

@@ -3,6 +3,12 @@ import io
 from .search import connect, open_image
 
 
+def colored_ink(raw):
+    import numpy as np
+    pixels=np.asarray(open_image(raw)).astype('int16')
+    return bool(((pixels.max(axis=2)-pixels.min(axis=2))>40).sum()>max(4,pixels.shape[0]*pixels.shape[1]*0.001))
+
+
 def store(db, document, images):
     rows=[]
     for raw in images:
@@ -33,11 +39,14 @@ def match(raw, limit=40):
             source=cv2.imdecode(np.frombuffer(row['image'],dtype=np.uint8),cv2.IMREAD_COLOR)
             if source is None:
                 continue
-            source=cv2.copyMakeBorder(source,64,64,64,64,cv2.BORDER_CONSTANT,value=(255,255,255))
+            factor=min(1,600/max(source.shape[:2]))
+            if factor<1:
+                source=cv2.resize(source,(round(source.shape[1]*factor),round(source.shape[0]*factor)),interpolation=cv2.INTER_AREA)
+            source=cv2.copyMakeBorder(source,32,32,32,32,cv2.BORDER_CONSTANT,value=(255,255,255))
             query_bgr=cv2.cvtColor(query,cv2.COLOR_RGB2BGR)
             best=0
             for scale in np.arange(0.5,2.51,0.05):
-                width,height=round(query.shape[1]*scale),round(query.shape[0]*scale)
+                width,height=round(query.shape[1]*scale*factor),round(query.shape[0]*scale*factor)
                 if min(width,height)<8 or width>source.shape[1] or height>source.shape[0]:
                     continue
                 template=cv2.resize(query_bgr,(width,height),interpolation=cv2.INTER_AREA)

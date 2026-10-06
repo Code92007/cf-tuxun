@@ -83,6 +83,25 @@ class AppTest(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         return client, payload
 
+    def test_problem_search_is_super_admin_only_and_csrf_protected(self):
+        client, user = self.register("search_admin")
+        for path in ("/api/admin/search/status",):
+            self.assertEqual(Client(self.port).request("GET", path)[0], 401)
+            self.assertEqual(client.request("GET", path)[0], 403)
+        get_db().execute("UPDATE users SET is_admin=1 WHERE username='search_admin'")
+        self.assertEqual(client.request("GET", "/api/admin/search/status")[0], 403)
+        self.assertEqual(client.request("POST", "/api/admin/search", {"text":"permutation"})[0], 403)
+        self.assertEqual(client.request("POST", "/api/admin/search/backfill", {"action":"start"})[0], 403)
+        get_db().execute("UPDATE users SET is_super_admin=1 WHERE username='search_admin'")
+        self.assertEqual(client.request("GET", "/api/admin/search/status")[0], 200)
+        csrf = client.csrf
+        client.csrf = ""
+        self.assertEqual(client.request("POST", "/api/admin/search", {"text":"tree"})[0], 403)
+        client.csrf = csrf
+        self.assertEqual(client.request("POST", "/api/admin/search", {"text":"tree"})[0], 200)
+        self.assertEqual(client.request("POST", "/api/admin/search", {"text":""})[0], 400)
+        self.assertEqual(client.request("POST", "/api/admin/search/backfill", {"action":"wrong"})[0], 400)
+
     def test_registration_quiz_and_shared_aliases(self):
         client, registered = self.register("quiz_user")
         status, config = client.request("GET", "/api/config")

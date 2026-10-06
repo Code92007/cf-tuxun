@@ -1,2 +1,3 @@
-# The application intentionally uses only the Python standard library.
-
+beautifulsoup4>=4.12,<5
+Pillow>=12.0,<13
+numpy>=2.0,<3

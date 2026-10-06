@@ -110,6 +110,7 @@ function renderUser() {
   $("#rating-tier").textContent = ratingTier(u.rating);
   $("#admin-nav").classList.toggle("hidden", !u.isAdmin);
   $("#permissions-nav").classList.toggle("hidden", !u.isSuperAdmin);
+  $("#search-nav").classList.toggle("hidden", !u.isSuperAdmin);
 }
 
 function ratingTier(rating) {
@@ -135,6 +136,7 @@ const viewMeta = {
   submit: ["CONTRIBUTE", "投稿线索"],
   admin: ["MODERATION", "审核投稿"],
   permissions: ["ACCESS CONTROL", "权限管理"],
+  search: ["PROBLEM SEARCH", "搜题"],
   leaderboard: ["RANKING", "排行榜"],
 };
 
@@ -151,6 +153,7 @@ function showView(name) {
   if (name === "admin") loadAdminSubmissions();
   if (name === "admin") loadOpenCandidates();
   if (name === "permissions") loadPermissionUsers();
+  if (name === "search") loadSearchStatus();
   if (name !== "battle" && state.battle.poll) stopBattlePoll();
   if (name === "battle" && state.battle.code) startBattlePoll();
   if (name !== "daily") stopDailyTimer();
@@ -1520,5 +1523,51 @@ async function boot() {
     toast("无法连接服务器", "error");
   }
 }
+
+let searchImage = "";
+async function loadSearchStatus() {
+  if (!state.user?.isSuperAdmin) return;
+  try {
+    const s = await api("/api/admin/search/status");
+    $("#search-status").textContent = `${s.running ? "回刷中" : s.enabled ? "已启用，等待续刷" : "已暂停"} · 已入库 ${s.documents} 题 · 图像向量 ${s.visuals} 条\n比赛：完成 ${s.jobs.done || 0}，待处理 ${s.jobs.pending || 0}，处理中 ${s.jobs.running || 0}，失败待重试 ${s.jobs.failed || 0}\n${s.ocrAvailable ? "截图文字识别可用" : "未安装 OCR，截图仅支持插图相似度匹配"}${s.lastError ? "\n目录错误：" + s.lastError : ""}\n${s.errors.map(e => `${e.contest} ${e.name}: ${e.error}`).join("\n")}`;
+  } catch (e) { toast(e.message, "error"); }
+}
+async function setSearchImage(file) {
+  if (!file || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) return toast("请选择 PNG、JPEG 或 WebP 图片", "error");
+  if (file.size > 3 * 1024 * 1024) return toast("图片不能超过 3 MB", "error");
+  searchImage = await new Promise((resolve, reject) => {
+    const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+  });
+  $("#search-preview").src = searchImage;
+  $("#search-preview-wrap").classList.remove("hidden");
+}
+$("#search-file").addEventListener("change", e => setSearchImage(e.target.files[0]).catch(() => toast("图片读取失败", "error")));
+$("#search-clear").addEventListener("click", () => {
+  searchImage = ""; $("#search-file").value = ""; $("#search-preview").removeAttribute("src"); $("#search-preview-wrap").classList.add("hidden");
+});
+$("#search-form").addEventListener("paste", e => {
+  const file = [...(e.clipboardData?.items || [])].find(i => i.kind === "file" && i.type.startsWith("image/"))?.getAsFile();
+  if (file) { e.preventDefault(); setSearchImage(file).catch(() => toast("图片读取失败", "error")); }
+});
+$("#search-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const button = e.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true; $("#search-message").textContent = "正在检索…"; $("#search-results").replaceChildren();
+  try {
+    const s = await api("/api/admin/search", {method:"POST", body:{text:$("#search-text").value, image:searchImage || undefined}});
+    if (s.recognizedText && !$("#search-text").value.trim()) $("#search-text").value = s.recognizedText;
+    $("#search-message").textContent = `${s.results.length ? "找到 " + s.results.length + " 个候选" : "暂无匹配；请检查截图文字或回刷进度"}${s.warnings.length ? " · " + s.warnings.join("；") : ""}`;
+    $("#search-results").innerHTML = s.results.map(r => `<article class="submission-item"><div class="submission-copy"><strong><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${r.contest}${escapeHtml(r.problem)} · ${escapeHtml(r.title)}</a></strong><span>${escapeHtml(r.contest_name)}${r.imageSimilarity !== undefined ? " · 图像相似度 " + (r.imageSimilarity * 100).toFixed(0) + "%" : ""}</span><p>${escapeHtml(r.snippet)}</p></div></article>`).join("");
+  } catch (err) { $("#search-message").textContent = err.message; }
+  finally { button.disabled = false; }
+});
+$("#search-refresh").addEventListener("click", loadSearchStatus);
+for (const action of ["start", "pause"]) $("#search-" + action).addEventListener("click", async e => {
+  e.currentTarget.disabled = true;
+  try { await api("/api/admin/search/backfill", {method:"POST", body:{action}}); await loadSearchStatus(); }
+  catch (err) { toast(err.message, "error"); }
+  finally { e.target.disabled = false; }
+});
+setInterval(() => { if (state.view === "search" && state.user?.isSuperAdmin) loadSearchStatus(); }, 15000);
 
 boot();

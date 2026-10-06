@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="通过题面截图识别 Codeforces 题号，支持单人训练与双人对战。">
   <title>CF Snap - Codeforces 图寻</title>
-  <link rel="stylesheet" href="/static/styles.css?v=13">
+  <link rel="stylesheet" href="./styles.css?v=14">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -54,6 +54,7 @@
         <button class="nav-item" data-view="submit" type="button"><span aria-hidden="true">＋</span>投稿线索</button>
         <button id="admin-nav" class="nav-item hidden" data-view="admin" type="button"><span aria-hidden="true">✓</span>审核投稿</button>
         <button id="permissions-nav" class="nav-item hidden" data-view="permissions" type="button"><span aria-hidden="true">⚿</span>权限管理</button>
+        <button id="search-nav" class="nav-item hidden" data-view="search" type="button"><span aria-hidden="true">⌕</span>搜题</button>
         <button class="nav-item" data-view="leaderboard" type="button"><span aria-hidden="true">▥</span>排行榜</button>
       </nav>
       <div class="side-account">
@@ -346,6 +347,22 @@
           </div>
         </section>
 
+        <section id="view-search" class="view">
+          <div class="section-head"><h3>搜 Codeforces 题目</h3><button id="search-refresh" class="text-btn" type="button">刷新进度</button></div>
+          <p>输入题面片段，或上传／粘贴截图。结果为候选题，请核对原题和约束。</p>
+          <form id="search-form" class="stack-form">
+            <label>题面文字<textarea id="search-text" rows="5" maxlength="5000" placeholder="粘贴英文题面片段，也可修改截图识别后的文字"></textarea></label>
+            <label class="file-picker">选择题面截图（最大 3 MB）<input id="search-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
+            <figure id="search-preview-wrap" class="upload-preview hidden"><img id="search-preview" alt="搜索截图"><button id="search-clear" class="text-btn" type="button">移除截图</button></figure>
+            <button class="primary" type="submit">搜题</button>
+          </form>
+          <p id="search-message" role="status"></p>
+          <div id="search-results" class="submission-list"></div>
+          <div class="section-head"><h3>历史比赛回刷</h3><button id="search-start" class="secondary" type="button">开始／继续回刷</button><button id="search-pause" class="text-btn" type="button">暂停</button></div>
+          <p>覆盖 contest 区已结束比赛的全部题目，优先最近比赛；自动续刷，失败项延迟重试。</p>
+          <pre id="search-status" style="white-space:pre-wrap" role="status"></pre>
+        </section>
+
         <section id="view-admin" class="view">
           <section class="section-block review-block">
             <div class="section-head"><div><p class="kicker">REVIEW QUEUE</p><h3>投稿审核</h3></div><button id="refresh-reviews" class="text-btn" type="button">刷新</button></div>
@@ -386,6 +403,6 @@
       <div class="confirm-actions"><button id="confirm-cancel" class="secondary" type="button">取消</button><button id="confirm-accept" class="danger-btn" type="button">确认</button></div>
     </section>
   </div>
-  <script src="/static/app.js?v=13" defer></script>
+  <script src="./app.js?v=14" defer></script>
 </body>
 </html>

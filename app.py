@@ -511,6 +511,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/api/admin/search/status":
+            if not self.require_super_admin():
+                return
+            from cfshot.search import status
+            return self.json(**status())
         if path == "/api/health":
             return self.json(ok=True, time=int(now()))
         if path == "/api/me":
@@ -549,6 +554,24 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except ValueError as exc:
             return self.json(400, error=str(exc))
+        if path in {"/api/admin/search", "/api/admin/search/backfill"}:
+            if not self.require_super_admin(csrf=True):
+                return
+            if not isinstance(payload, dict):
+                return self.json(400, error="请求必须为对象")
+            from cfshot.search import search, start, pause, status
+            try:
+                if path.endswith("/backfill"):
+                    action = payload.get("action")
+                    if action not in {"start", "pause"}:
+                        return self.json(400, error="无效的回刷操作")
+                    (start if action == "start" else pause)()
+                    return self.json(**status())
+                if rate_limited(self.client_key("search"), limit=10):
+                    return self.json(429, error="搜索过于频繁，请稍后重试")
+                return self.json(**search(payload.get("text", ""), payload.get("image")))
+            except ValueError as exc:
+                return self.json(400, error=str(exc))
         if path == "/api/auth/register":
             return self.register(payload)
         if path == "/api/auth/login":
@@ -2164,6 +2187,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     init_db()
+    from cfshot.search import resume
+    resume()
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     server = ThreadingHTTPServer((host, port), Handler)

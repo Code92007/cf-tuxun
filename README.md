@@ -26,9 +26,10 @@ CF Snap 是一个 Codeforces 题面截图识别游戏。玩家只看到去掉标
 
 ## 本地运行
 
-只需要 Python 3.10+，不依赖第三方包：
+使用 Python 3.10+。搜题功能使用免费开源依赖，截图文字识别还需要系统安装 Tesseract（Docker 镜像已包含英文语言包）：
 
 ```bash
+python3 -m pip install -r requirements.txt
 python3 app.py
 ```
 
@@ -92,3 +93,21 @@ python3 scripts/make_admin.py 用户名 --super
 ## 数据来源说明
 
 题号、Round、rating 与标签应以 Codeforces 官方公开 API 为准。Codeforces API 限制为两秒一次请求；题面网页可能触发 Cloudflare，因此正式题库采用审核后缓存，不在玩家每次答题时抓取官网。页面揭晓后会链接回原题。
+
+## 超级管理员搜题
+
+“搜题”入口只对超级管理员显示，搜索、进度、回刷控制接口都在后端强制校验超级管理员权限；POST 同时校验 CSRF。支持英文题面片段、图片上传及 Ctrl/Cmd+V 粘贴截图，返回最多 20 个候选题、题面摘要和原题链接。
+
+文本采用 SQLite FTS5 倒排索引、BM25 排序及词前缀匹配。截图用本地 Tesseract OCR 提取英文，再和题面插图的局部灰度向量余弦相似度结果融合。向量存储在 SQLite，NumPy 分批进行精确相似度计算，不需要 ES、Milvus、GPU、付费接口或模型下载。相似度是匹配指标，不是正确概率；纯图案、短裁剪、OCR 识别错误和易／难版本仍需人工核对。当前图像描述符是轻量视觉特征，不是语义模型；超大插图库可以后续替换成 ANN 索引。
+
+应用首次启动自动开始历史回刷，之后会记住暂停状态。回刷调用官方 `contest.list?gym=false` 获取全部已结束 contest 区比赛，按比赛开始时间倒序；每场通过 `contest.standings` 获取所有题目（不依赖 problemset 是否收录），抓取英文题面和插图。每次请求至少间隔 2.2 秒，每道题提交检查点，失败比赛指数退避重试；重启后继续，每小时刷新目录以补充新结束的比赛。进行中的比赛和 Gym 不抓取。搜索库和游戏题库完全独立，抓取结果不会自动成为游戏线索。
+
+超级管理员可在搜题页查看完成／待处理／失败数量、错误原因，以及暂停／继续回刷。数据保存在 `DATA_DIR/search.db`，同样需要持久化和备份。初始全库需要较长时间，页面上已有题目数量表示实际可搜索覆盖；Cloudflare 拦截会明确显示为失败待重试，不能将仅有元数据视为题面抓取完成。
+
+也可单独在前台运行回刷；进程锁会避免和站内任务重复抓取，站内暂停也会通知命令行任务停止：
+
+```bash
+python3 scripts/backfill_search.py
+```
+
+本地 macOS 可用 `brew install tesseract` 安装 OCR；Linux 可安装 `tesseract-ocr` 和 `tesseract-ocr-eng`。代码的核心游戏仍可直接运行，图片搜索需要安装依赖；生产环境推荐重建 Docker 镜像后使用。

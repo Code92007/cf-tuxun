@@ -4,5 +4,7 @@ __pycache__/
 .env
 data/*.db
 data/*.db-*
+data/search-backfill.log
+data/search-worker.lock
 data/uploads/
 work/

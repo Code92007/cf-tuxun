@@ -1,0 +1,142 @@
+"""Resumable newest-first corpus backfill; never imports unreviewed game clues."""
+import json
+import time
+import urllib.request
+import urllib.error
+from urllib.parse import urljoin, urlparse
+
+from .search import connect, upsert, visual_vectors, worker_lock
+
+
+class Fetcher:
+    def __init__(self, stop, controlled=False):
+        self.stop = stop
+        self.last = 0
+        self.controlled = controlled
+
+    def fetch(self, url, binary=False):
+        if self.controlled:
+            with connect() as db:
+                enabled = db.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()
+            if enabled and enabled[0]=='0':
+                self.stop.set()
+                raise InterruptedError()
+        if self.stop.wait(max(0,2.2-(time.monotonic()-self.last))):
+            raise InterruptedError()
+        self.last = time.monotonic()
+        request = urllib.request.Request(url,headers={'User-Agent':'CF-Snap-Search/1.0','Accept-Language':'en'})
+        limit = 64*1024*1024 if '/api/' in url else 8*1024*1024
+        try:
+            with urllib.request.urlopen(request,timeout=30) as response:
+                raw = response.read(limit+1)
+        except urllib.error.HTTPError as exc:
+            try:
+                comment = json.loads(exc.read(8192)).get('comment', '')
+            except (ValueError, UnicodeError):
+                comment = ''
+            raise ValueError(f'HTTP {exc.code}: {comment or exc.reason}') from exc
+        if len(raw)>limit:
+            raise ValueError('远端内容过大')
+        return raw if binary else raw.decode('utf-8')
+
+    def api(self, method):
+        result = json.loads(self.fetch('https://codeforces.com/api/'+method))
+        if result.get('status')!='OK':
+            raise ValueError(result.get('comment','API failed'))
+        return result['result']
+
+
+def parse_statement(page):
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(page,'html.parser')
+    statement = soup.select_one('.problem-statement')
+    if statement is None:
+        raise ValueError('未找到题面（可能被 Cloudflare 拦截），稍后重试')
+    for item in statement.select('script,style'):
+        item.decompose()
+    images = [i.get('src','') for i in statement.select('img[src]')]
+    text = statement.get_text(' ',strip=True)
+    if len(text)<40:
+        raise ValueError('题面不完整')
+    return text,images
+
+
+def sync_catalog(fetcher, db):
+    contests = fetcher.api('contest.list?gym=false')
+    for contest in contests:
+        if contest.get('phase')!='FINISHED' or contest['id']>=100000:
+            continue
+        db.execute('''INSERT INTO jobs(contest,name,started) VALUES(?,?,?)
+            ON CONFLICT(contest) DO UPDATE SET name=excluded.name,started=excluded.started''',
+            (contest['id'],contest['name'],contest.get('startTimeSeconds',0)))
+    db.commit()
+
+
+def crawl_contest(fetcher, db, job):
+    contest = job['contest']
+    # Standings includes all contest problems, including ones absent from problemset.
+    result = fetcher.api(f'contest.standings?contestId={contest}')
+    for problem in result['problems']:
+        if fetcher.stop.is_set():
+            raise InterruptedError()
+        existing = db.execute('SELECT id FROM documents WHERE contest=? AND problem=?',
+                              (contest,problem['index'])).fetchone()
+        if existing:
+            continue
+        url = f"https://codeforces.com/contest/{contest}/problem/{problem['index']}?locale=en"
+        body,images = parse_statement(fetcher.fetch(url))
+        vectors = []
+        for source in images:
+            image_url = urljoin(url,source)
+            parsed = urlparse(image_url)
+            if parsed.scheme!='https' or parsed.hostname not in {'codeforces.com','codeforces.org','espresso.codeforces.com','sta.codeforces.com','sta.codeforces.org'}:
+                continue
+            # Asset failures keep the contest pending so it is retried, not silently lost.
+            vectors.extend(visual_vectors(fetcher.fetch(image_url,binary=True)))
+        with db:
+            upsert(db,contest,problem['index'],problem['name'],job['name'],job['started'],body,vectors)
+
+
+def run(stop):
+    with worker_lock() as acquired:
+        if acquired:
+            _run(stop)
+
+
+def _run(stop):
+    fetcher = Fetcher(stop, controlled=True)
+    catalog_at = 0
+    while not stop.is_set():
+        try:
+            with connect() as db:
+                enabled = db.execute("SELECT value FROM settings WHERE key='enabled'").fetchone()
+                if enabled and enabled[0]=='0':
+                    return
+                if time.time()-catalog_at>3600:
+                    sync_catalog(fetcher,db)
+                    catalog_at = time.time()
+                    db.execute("INSERT OR REPLACE INTO settings VALUES('last_error','')")
+                    db.commit()
+                job = db.execute("SELECT * FROM jobs WHERE state!='done' AND retry_at<=? ORDER BY started DESC,contest DESC LIMIT 1",(time.time(),)).fetchone()
+                if job is None:
+                    stop.wait(60)
+                    continue
+                db.execute("UPDATE jobs SET state='running' WHERE contest=?",(job['contest'],))
+                db.commit()
+                try:
+                    crawl_contest(fetcher,db,job)
+                    db.execute("UPDATE jobs SET state='done',error='',retry_at=0 WHERE contest=?",(job['contest'],))
+                except InterruptedError:
+                    db.execute("UPDATE jobs SET state='pending' WHERE contest=?",(job['contest'],))
+                    db.commit()
+                    return
+                except Exception as exc:
+                    delay = min(86400,60*2**min(job['attempts'],10))
+                    db.execute("UPDATE jobs SET state='failed',attempts=attempts+1,error=?,retry_at=? WHERE contest=?",(str(exc)[:500],time.time()+delay,job['contest']))
+                db.commit()
+        except InterruptedError:
+            return
+        except Exception as exc:
+            with connect() as db:
+                db.execute("INSERT OR REPLACE INTO settings VALUES('last_error',?)",(str(exc)[:500],))
+            stop.wait(60)

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from cfshot.search import connect,worker_lock
-from cfshot.search_snapshot import DEFAULT_SNAPSHOT
+from cfshot.search_snapshot import DEFAULT_SNAPSHOT, records
 
 
 def merge(source):
@@ -17,11 +17,8 @@ def merge(source):
     with worker_lock() as acquired:
         if not acquired:
             raise RuntimeError('Stop the crawler before importing derived caches')
-        with gzip.open(source,'rt',encoding='utf-8') as archive,connect() as db:
-            if json.loads(next(archive)) != {'type':'header','version':1}:
-                raise ValueError('Unsupported search snapshot version')
-            for line in archive:
-                record=json.loads(line)
+        with connect() as db:
+            for record in records(source):
                 if record.get('type')!='document':
                     continue
                 row=db.execute('SELECT id,body FROM documents WHERE contest=? AND problem=?',(record['contest'],record['problem'])).fetchone()

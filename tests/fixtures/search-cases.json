@@ -28,7 +28,8 @@
     "image": "static/questions/2201C-search.jpg",
     "ocr": "$1: changes S to\"() ()\"\n\nSy: changes S to\"() ()\"\n\nS3: changes S to\"() ()\"\n\nS4: changes S to\"() ()\"\nS,S3: changes S to\"() ()\";\nS_S3: changes S to\"(())\";\nS_S4: changes S to\"() ()\";\nS1S_S3: changes S to\"(())\".",
     "accepted": [
-      "2201C"
+      "2201C",
+      "2202E"
     ]
   },
   {

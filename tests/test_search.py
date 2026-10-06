@@ -119,6 +119,23 @@ class SearchTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM visuals').fetchone()[0],1)
             self.assertEqual(db.execute('SELECT state FROM jobs WHERE contest=2200').fetchone()[0],'done')
 
+    def test_sharded_snapshot_is_stable_and_restores(self):
+        from cfshot.search_snapshot import export_snapshot, restore_snapshot_if_empty, records
+        snapshot = Path(self.folder.name) / 'shards' / 'manifest.json'
+        with search.connect() as db:
+            search.upsert(db,2200,'A','Title','Round',100,'Distinct public text',[])
+            search.upsert(db,2250,'B','Title','Round',100,'Other public text',[])
+        self.assertEqual(export_snapshot(snapshot),2)
+        first = snapshot.read_bytes()
+        self.assertEqual(len(json.loads(first)['shards']),2)
+        self.assertEqual(export_snapshot(snapshot),2)
+        self.assertEqual(first,snapshot.read_bytes())
+        self.assertEqual(len(list(records(snapshot))),2)
+        with search.connect() as db:
+            db.execute('DELETE FROM documents')
+            db.execute('DELETE FROM fragments')
+        self.assertEqual(restore_snapshot_if_empty(snapshot),2)
+
     def test_catalog_orders_by_time_and_resumes_every_problem(self):
         class Fetcher:
             stop = threading.Event()

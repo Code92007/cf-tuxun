@@ -114,7 +114,7 @@ python3 scripts/backfill_search.py
 
 ### GitHub 题库备份与恢复
 
-公开搜索数据以 `catalog/search-corpus.jsonl.gz` 保存在 Git 中，包含题面、题号、比赛元数据、局部图像向量、离线公式缩略图、原始插图和已完成的比赛标记，不包含账户、会话、投稿、运行时设置或错误日志。应用启动时若搜索库为空，会自动恢复这份快照，再从未完成的比赛继续回刷；已有搜索库不会被快照覆盖。
+公开搜索数据以 `catalog/search-corpus/manifest.json` 保存在 Git 中，包含题面、题号、比赛元数据、局部图像向量、离线公式缩略图、原始插图和已完成的比赛标记，不包含账户、会话、投稿、运行时设置或错误日志。应用启动时若搜索库为空，会自动恢复这份快照，再从未完成的比赛继续回刷；已有搜索库不会被快照覆盖。
 
 生成最新公开数据快照：
 
@@ -125,7 +125,9 @@ python3 scripts/export_search.py
 生产容器可导出到持久卷后下载并提交 Git：
 
 ```bash
-docker compose exec -T app python scripts/export_search.py --output /data/search-corpus.jsonl.gz
+docker compose exec -T app python scripts/export_search.py --output /data/search-corpus/manifest.json
 ```
 
 快照采用一致的 SQLite 读事务和原子文件替换，同一份数据重复导出的文件内容一致。全量回刷结束后应再导出并推送最新快照；版本化快照用于公开题库恢复，账户数据库仍需单独备份。
+
+公开快照按固定的 25 个 contest ID 范围分片，manifest 校验每片 SHA-256；同步时复制整个 `search-corpus` 目录。旧版单 gzip 快照仍可导入。

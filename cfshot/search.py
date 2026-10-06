@@ -262,7 +262,7 @@ def search(text='', image=None):
             from .illustration_search import match as illustration_match, colored_ink
             strong_text = any(r.get('phraseSimilarity',0)>0.3 or r.get('constraintMatch') for r in ranks.values())
             strong_formula = bool(formula_hits and formula_hits[0][1]>=0.8)
-            need_illustration = len(tokens)<4 and (colored_ink(raw) or not (strong_text or strong_formula))
+            need_illustration = len(tokens)<4 and not strong_text and (colored_ink(raw) or not strong_formula)
             for rank,(ident,similarity) in enumerate(illustration_match(raw) if need_illustration else []):
                 item = ranks.setdefault(ident,{'score':0})
                 item['score'] += 12*similarity**6/(60+rank+1)

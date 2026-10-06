@@ -256,12 +256,14 @@ def search(text='', image=None):
             formula_hits = [] if numeric_sample or strong_prose else match(raw)
             for rank,(ident,similarity) in enumerate(formula_hits):
                 item = ranks.setdefault(ident,{'score':0})
-                weight = 4 if len(tokens)<8 else 0.5
+                weight = 0.5 if strong_prose else 4
                 item['score'] += weight*similarity**4/(60+rank+1)
                 item['formulaSimilarity'] = round(similarity,3)
+                if similarity>=0.7 and item.get('phraseSimilarity',0)>=0.1:
+                    item['score'] += 8*min(1,item['phraseSimilarity']*2)*similarity**4/61
             from .illustration_search import match as illustration_match, colored_ink
             strong_text = any(r.get('phraseSimilarity',0)>0.3 or r.get('constraintMatch') for r in ranks.values())
-            strong_formula = bool(formula_hits and formula_hits[0][1]>=0.8)
+            strong_formula = bool(formula_hits and formula_hits[0][1]>=0.7)
             need_illustration = len(tokens)<4 and not strong_text and (colored_ink(raw) or not strong_formula)
             for rank,(ident,similarity) in enumerate(illustration_match(raw) if need_illustration else []):
                 item = ranks.setdefault(ident,{'score':0})

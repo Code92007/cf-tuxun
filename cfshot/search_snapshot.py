@@ -74,17 +74,22 @@ def export_snapshot(output=DEFAULT_SNAPSHOT):
         staging = Path(staging)
         count = _export_legacy(staging / 'all.gz')
         handles = {}
+        raw_handles = []
         try:
             for record in records(staging / 'all.gz'):
                 # Stable 25-contest ranges keep files comfortably below GitHub's limit.
                 lower = int(record['contest']) // 25 * 25
                 name = f'{lower:04d}-{lower+24:04d}.jsonl.gz'
                 if name not in handles:
-                    handles[name] = io.TextIOWrapper(gzip.GzipFile(fileobj=open(staging / name,'wb'),mode='wb',mtime=0,filename=''),encoding='utf-8')
+                    raw_handle = open(staging / name,'wb')
+                    raw_handles.append(raw_handle)
+                    handles[name] = io.TextIOWrapper(gzip.GzipFile(fileobj=raw_handle,mode='wb',mtime=0,filename=''),encoding='utf-8')
                     handles[name].write(json.dumps({'type':'header','version':1})+'\n')
                 handles[name].write(json.dumps(record,ensure_ascii=False,separators=(',',':'))+'\n')
         finally:
             for handle in handles.values():
+                handle.close()
+            for handle in raw_handles:
                 handle.close()
         shards = []
         for name in sorted(handles):

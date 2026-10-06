@@ -8,3 +8,4 @@ data/search-backfill.log
 data/search-worker.lock
 data/uploads/
 work/
+data/search-corpus.jsonl.gz

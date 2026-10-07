@@ -39,7 +39,7 @@ def match(raw, limit=40):
         if factor<1:
             source=cv2.resize(source,(round(source.shape[1]*factor),round(source.shape[0]*factor)),interpolation=cv2.INTER_AREA)
         source=cv2.copyMakeBorder(source,12,12,12,12,cv2.BORDER_CONSTANT,value=(255,255,255))
-        best=0
+        best,best_scale=0,1
         for scale in scales:
             width,height=round(query.shape[1]*scale*factor),round(query.shape[0]*scale*factor)
             if min(width,height)<4 or width>source.shape[1] or height>source.shape[0]:
@@ -47,19 +47,22 @@ def match(raw, limit=40):
             template=cv2.resize(query_bgr,(width,height),interpolation=cv2.INTER_AREA)
             if float(template.std())<5:
                 continue
-            best=max(best,float(cv2.minMaxLoc(cv2.matchTemplate(source,template,cv2.TM_CCOEFF_NORMED))[1]))
-        return best
+            score=float(cv2.minMaxLoc(cv2.matchTemplate(source,template,cv2.TM_CCOEFF_NORMED))[1])
+            if score>best:
+                best,best_scale=score,scale
+        return best,best_scale
     with connect() as db:
         rows=db.execute('SELECT document,image FROM illustration_images').fetchall()
     candidates=[]
     for row in rows:
         source=cv2.imdecode(np.frombuffer(row['image'],dtype=np.uint8),cv2.IMREAD_COLOR)
         if source is not None:
-            candidates.append((similarity(source,180,(0.5,0.75,1,1.25,1.5,2,2.5)),row['document'],row['image']))
+            score,scale=similarity(source,180,(0.5,0.75,1,1.25,1.5,2,2.5))
+            candidates.append((score,scale,row['document'],row['image']))
     scores={}
-    for _,document,encoded in sorted(candidates,key=lambda r:-r[0])[:60]:
+    for _,scale,document,encoded in sorted(candidates,key=lambda r:-r[0])[:60]:
         source=cv2.imdecode(np.frombuffer(encoded,dtype=np.uint8),cv2.IMREAD_COLOR)
-        best=similarity(source,600,np.arange(0.5,2.51,0.05))
+        best,_=similarity(source,400,np.arange(max(0.5,scale-0.25),min(2.51,scale+0.26),0.05))
         if best>=0.72:
             scores[document]=max(scores.get(document,0),best)
     return sorted(scores.items(),key=lambda p:-p[1])[:limit]

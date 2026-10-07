@@ -216,3 +216,12 @@ SEARCH_CLUES = [{'key': '2246E@search',
   'brain': 1,
   'open_mode': 0,
   'aliases': [(2193, 'H', 1076, 'Div. 3')]}]
+
+SEARCH_CLUES.append({
+    'key': '2155F@search', 'title': "Juan's Colorful Tree", 'rating': 2800,
+    'contest_time': 1759682100, 'round_type': 'Div. 2',
+    'source_url': 'https://codeforces.com/contest/2155/problem/F',
+    'clue': 'Cardinality of the intersection of color sets on a tree path.',
+    'clue_kind': 'image', 'image_path': 'static/questions/2155F-search.png',
+    'brain': 1, 'open_mode': 0, 'aliases': [(2155, 'F', 1056, 'Div. 2')],
+})

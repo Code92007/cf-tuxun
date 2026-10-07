@@ -136,6 +136,34 @@ class SearchTest(unittest.TestCase):
             db.execute('DELETE FROM fragments')
         self.assertEqual(restore_snapshot_if_empty(snapshot),2)
 
+    def test_pdf_statement_extracts_text_instead_of_decoding_binary(self):
+        from pypdf import PdfWriter
+        from pypdf.generic import DictionaryObject,NameObject,DecodedStreamObject
+        writer=PdfWriter()
+        page=writer.add_blank_page(width=600,height=800)
+        font=DictionaryObject({NameObject('/Type'):NameObject('/Font'),NameObject('/Subtype'):NameObject('/Type1'),NameObject('/BaseFont'):NameObject('/Helvetica')})
+        page[NameObject('/Resources')]=DictionaryObject({NameObject('/Font'):DictionaryObject({NameObject('/F1'):writer._add_object(font)})})
+        stream=DecodedStreamObject()
+        stream.set_data(b'BT /F1 12 Tf 20 700 Td (A public contest statement with enough text to index and search.) Tj ET')
+        page[NameObject('/Contents')]=writer._add_object(stream)
+        buffer=io.BytesIO();writer.write(buffer)
+        text,images=parse_statement(buffer.getvalue())
+        self.assertIn('contest statement',text)
+        self.assertEqual(images,[])
+
+    def test_large_public_asset_resizes_without_relaxing_upload_limit(self):
+        from PIL import Image
+        from cfshot.search_crawler import normalize_asset
+        image=Image.new('RGB',(3200,4000),'white')
+        buffer=io.BytesIO();image.save(buffer,format='PNG')
+        raw=buffer.getvalue()
+        with self.assertRaisesRegex(ValueError,'像素'):
+            search.open_image(raw)
+        normalized=normalize_asset(raw)
+        self.assertLessEqual(max(search.open_image(normalized).size),1600)
+        with self.assertRaisesRegex(ValueError,'像素'):
+            search.open_image(raw)
+
     def test_catalog_orders_by_time_and_resumes_every_problem(self):
         class Fetcher:
             stop = threading.Event()

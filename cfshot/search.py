@@ -110,7 +110,7 @@ def upsert(db, contest, problem, title, name, started, body, vectors=()):
 
 def open_image(raw):
     from PIL import Image, ImageOps
-    Image.MAX_IMAGE_PIXELS = 12_000_000
+    Image.MAX_IMAGE_PIXELS = 48_000_000
     with Image.open(io.BytesIO(raw)) as source:
         if source.width * source.height > 12_000_000:
             raise ValueError('图片像素过大')
@@ -254,16 +254,20 @@ def search(text='', image=None):
             from .formula_search import match
             strong_prose = len(tokens)>=12 and any(r.get('phraseSimilarity',0)>0.45 for r in ranks.values())
             formula_hits = [] if numeric_sample or strong_prose else match(raw)
+            reliable_text = any(r.get('phraseSimilarity',0)>0.3 or r.get('constraintMatch') for r in ranks.values())
             for rank,(ident,similarity) in enumerate(formula_hits):
                 item = ranks.setdefault(ident,{'score':0})
                 weight = 0.5 if strong_prose else 4
-                item['score'] += weight*similarity**4/(60+rank+1)
+                # Very short, uncorroborated OCR tokens should not suppress
+                # a formula whose shape survives font/rendering differences.
+                evidence = similarity if len(tokens)<4 and not reliable_text else similarity**4
+                item['score'] += weight*evidence/(60+rank+1)
                 item['formulaSimilarity'] = round(similarity,3)
                 if similarity>=0.7 and item.get('phraseSimilarity',0)>=0.1:
                     item['score'] += 8*min(1,item['phraseSimilarity']*2)*similarity**4/61
             from .illustration_search import match as illustration_match, colored_ink
             strong_text = any(r.get('phraseSimilarity',0)>0.3 or r.get('constraintMatch') for r in ranks.values())
-            strong_formula = bool(formula_hits and formula_hits[0][1]>=0.7)
+            strong_formula = bool(formula_hits and formula_hits[0][1]>=(0.5 if re.search(r'[A-Za-z]{2,}',text) else 0.7))
             need_illustration = len(tokens)<4 and not strong_text and (not strong_formula or (colored_ink(raw) and not re.search(r'[A-Za-z]{2,}',text)))
             for rank,(ident,similarity) in enumerate(illustration_match(raw) if need_illustration else []):
                 item = ranks.setdefault(ident,{'score':0})

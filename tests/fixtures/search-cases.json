@@ -144,5 +144,13 @@
     "accepted": [
       "2193H"
     ]
+  },
+  {
+    "answer": "2155F",
+    "image": "static/questions/2155F-search.png",
+    "ocr": "ne\nJwEP",
+    "accepted": [
+      "2155F"
+    ]
   }
 ]

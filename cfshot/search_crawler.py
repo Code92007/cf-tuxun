@@ -1,4 +1,5 @@
 """Resumable newest-first corpus backfill; never imports unreviewed game clues."""
+import io
 import json
 import time
 import urllib.request
@@ -37,7 +38,10 @@ class Fetcher:
             raise ValueError(f'HTTP {exc.code}: {comment or exc.reason}') from exc
         if len(raw)>limit:
             raise ValueError('远端内容过大')
-        return raw if binary else raw.decode('utf-8')
+        if binary:
+            return normalize_asset(raw)
+        # Some ICPC/IOI mirror statements redirect directly to a PDF.
+        return raw if raw.startswith(b'%PDF-') else raw.decode('utf-8')
 
     def api(self, method):
         result = json.loads(self.fetch('https://codeforces.com/api/'+method))
@@ -46,7 +50,30 @@ class Fetcher:
         return result['result']
 
 
+def normalize_asset(raw):
+    """Bound trusted public CF assets without relaxing screenshot upload limits."""
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 48_000_000
+    with Image.open(io.BytesIO(raw)) as image:
+        if image.width*image.height>48_000_000:
+            raise ValueError('CF asset exceeds 48 million pixels')
+        if image.width*image.height<=12_000_000:
+            return raw
+        image.thumbnail((1600,1600))
+        buffer=io.BytesIO()
+        image.save(buffer,format='PNG')
+        return buffer.getvalue()
+
+
 def parse_statement(page):
+    if isinstance(page,bytes) and page.startswith(b'%PDF-'):
+        from pypdf import PdfReader
+        reader=PdfReader(io.BytesIO(page))
+        text=' '.join(p.extract_text() or '' for p in reader.pages)
+        if len(text.strip())<40:
+            raise ValueError('PDF statement has no extractable text')
+        images=[normalize_asset(image.data) for p in reader.pages for image in p.images]
+        return text,images
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(page,'html.parser')
     statement = soup.select_one('.problem-statement')
@@ -88,6 +115,10 @@ def crawl_contest(fetcher, db, job):
         vectors = []
         originals = []
         for source in images:
+            if isinstance(source,bytes):
+                vectors.extend(visual_vectors(source))
+                originals.append(source)
+                continue
             image_url = urljoin(url,source)
             parsed = urlparse(image_url)
             if parsed.scheme!='https' or parsed.hostname not in {'codeforces.com','codeforces.org','espresso.codeforces.com','sta.codeforces.com','sta.codeforces.org'}:
@@ -115,6 +146,9 @@ def backfill_illustration(fetcher, db, row=None):
     try:
         _,images = parse_statement(fetcher.fetch(row['url']+'?locale=en'))
         for source in images:
+            if isinstance(source,bytes):
+                originals.append(source)
+                continue
             url=urljoin(row['url'],source)
             parsed=urlparse(url)
             if parsed.scheme=='https' and parsed.hostname in {'codeforces.com','codeforces.org','espresso.codeforces.com','sta.codeforces.com','sta.codeforces.org'}:

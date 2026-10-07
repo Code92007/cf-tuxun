@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "documents": 5255,
+  "documents": 6060,
   "shards": [
     {
       "file": "0000-0024.jsonl.gz",
@@ -269,38 +269,38 @@
     },
     {
       "file": "1325-1349.jsonl.gz",
-      "sha256": "47be2685d361e76b703b9cd966427378378ee7523590161804ea57f07144ea33",
-      "bytes": 509
+      "sha256": "44c59de6dae30a480e128b1e00ebb7dc25f11c865b0e52730377aa885483c79a",
+      "bytes": 304747
     },
     {
       "file": "1350-1374.jsonl.gz",
-      "sha256": "921b6757c254b96d7f430b951425a278ab62c8a5476cad3057e61d94a3e17685",
-      "bytes": 519
+      "sha256": "6eff986c37cb7f2c0ba3cf5bf5d7561d45b496daa8336b31441d2c24aa768878",
+      "bytes": 3477730
     },
     {
       "file": "1375-1399.jsonl.gz",
-      "sha256": "fae776172ea94db2bf7358b5bddde52fb50dad917742adcefb0b7184b88192c6",
-      "bytes": 510
+      "sha256": "3999f7ab7e4ca34993d5e9897af6b94e64ba01a585b45db1bb89cf21b8eed85b",
+      "bytes": 5382081
     },
     {
       "file": "1400-1424.jsonl.gz",
-      "sha256": "13e74769629d719a29276d278e0476b25f543b3ad647d1bfa93c4732fc912662",
-      "bytes": 645
+      "sha256": "85b5ec703d53b5887e9a80228745bfd81e581111af0a3ba7a7701774fdc81720",
+      "bytes": 3221598
     },
     {
       "file": "1425-1449.jsonl.gz",
-      "sha256": "be6e98b27994c16e95af4261c79c0241e6ee6d2961c67f2f55165c39e2a49ad4",
-      "bytes": 594
+      "sha256": "ea6a502d3a34addabbcd07e15983383dc3bd6289294db5cf1866c6a0d25964c5",
+      "bytes": 3431935
     },
     {
       "file": "1450-1474.jsonl.gz",
-      "sha256": "ceb05d202d722c62128ed85e096ec53d1e011ad71ab5afc3023ada05cd9a975d",
-      "bytes": 580
+      "sha256": "afb179dc4a72b26fd75e9d6bedfdaa530f8ed5cbec7cd3d5fd88331d7438a362",
+      "bytes": 4097765
     },
     {
       "file": "1475-1499.jsonl.gz",
-      "sha256": "72f1ab068ca5c33746c7cdb68bb0c11ea93f520b07fa8ed710f26ad5f3c63a61",
-      "bytes": 4368736
+      "sha256": "c4d566dcf58e8ac12b96b899695c3faa274ebdaaa7c138f911b2f9dc596455bc",
+      "bytes": 4618160
     },
     {
       "file": "1500-1524.jsonl.gz",
@@ -379,33 +379,33 @@
     },
     {
       "file": "1875-1899.jsonl.gz",
-      "sha256": "98ff46f232d5476b63c032ecef01e3f11cb5320116a727ab8589417439496fc8",
-      "bytes": 2053748
+      "sha256": "c067de45134c6c201bc40e2c6490276ded29b6fe99535c3824e0db7ad331e52b",
+      "bytes": 2855812
     },
     {
       "file": "1900-1924.jsonl.gz",
-      "sha256": "636c8b9766aa12564f73a85acefea69b502b8717e2531306307a04c0187f642a",
-      "bytes": 2610403
+      "sha256": "0b5e271271dc5d06f0a4f5f2d18e011e8739d0d5bc8ab05f9b75eef9cca081a7",
+      "bytes": 4124695
     },
     {
       "file": "1925-1949.jsonl.gz",
-      "sha256": "2210680d87f8cb2496586262e9e0f6439fe13e3352345f5818d70b110e118cfd",
-      "bytes": 2971278
+      "sha256": "c45525aeae35a0714feefdbc318ec9de89d154496989637bba2bb27185433ce5",
+      "bytes": 6670143
     },
     {
       "file": "1950-1974.jsonl.gz",
-      "sha256": "99ba76c5fda99f13707678f667ec8d7fa60e0c63af9cc69c28e3c9413ffd4057",
-      "bytes": 1797943
+      "sha256": "1843089173454be5a890dd99420f9ddf799032cc72c60c2bd368c31bd8d30e88",
+      "bytes": 5789016
     },
     {
       "file": "1975-1999.jsonl.gz",
-      "sha256": "c06c69069def2ebda06b47a4583931b073b271f0e8d8fc8e21bad6ab8f6cd536",
-      "bytes": 2299822
+      "sha256": "b52e118f2e98e6f7ebf1e3d469d57adf240ebf9fcdea54c0a95837a028c34eba",
+      "bytes": 3429009
     },
     {
       "file": "2000-2024.jsonl.gz",
-      "sha256": "5c9ec5f211668cc82d1470928775c267e844b3a4b3e00b12a897c2d3f3be2dab",
-      "bytes": 4050564
+      "sha256": "7f8a1240a9ac34c18dc99fd1e9c8eba2474df139673c43ddc6382d7b42abd51b",
+      "bytes": 4064540
     },
     {
       "file": "2025-2049.jsonl.gz",

@@ -164,6 +164,17 @@ class SearchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'像素'):
             search.open_image(raw)
 
+    def test_huge_palette_public_asset_remains_bounded(self):
+        from PIL import Image
+        from cfshot.search_crawler import normalize_asset
+        image=Image.new('P',(18786,5316))
+        buffer=io.BytesIO();image.save(buffer,format='PNG');image.close()
+        raw=buffer.getvalue()
+        normalized=normalize_asset(raw)
+        self.assertEqual(search.open_image(normalized).size,(1600,453))
+        with self.assertRaises((ValueError,Image.DecompressionBombError)):
+            search.open_image(raw)
+
     def test_catalog_orders_by_time_and_resumes_every_problem(self):
         class Fetcher:
             stop = threading.Event()

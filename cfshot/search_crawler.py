@@ -53,13 +53,17 @@ class Fetcher:
 def normalize_asset(raw):
     """Bound trusted public CF assets without relaxing screenshot upload limits."""
     from PIL import Image
-    Image.MAX_IMAGE_PIXELS = 48_000_000
+    # Palette PNGs decode to one byte per pixel. A few official diagrams
+    # exceed 96 MP; permit these bounded assets without decoding them as RGB.
+    palette_png = raw.startswith(b'\x89PNG\r\n\x1a\n') and len(raw)>25 and raw[25]==3
+    Image.MAX_IMAGE_PIXELS = 128_000_000 if palette_png else 48_000_000
     with Image.open(io.BytesIO(raw)) as image:
-        if image.width*image.height>48_000_000:
-            raise ValueError('CF asset exceeds 48 million pixels')
+        limit = 128_000_000 if palette_png and image.mode=='P' else 48_000_000
+        if image.width*image.height>limit:
+            raise ValueError('CF asset exceeds pixel limit')
         if image.width*image.height<=12_000_000:
             return raw
-        image.thumbnail((1600,1600))
+        image.thumbnail((1600,1600),resample=Image.Resampling.NEAREST if image.mode=='P' else Image.Resampling.LANCZOS)
         buffer=io.BytesIO()
         image.save(buffer,format='PNG')
         return buffer.getvalue()
